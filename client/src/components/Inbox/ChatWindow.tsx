@@ -49,10 +49,15 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Mark as read when conversation is opened
+  // Mark as read and auto-focus when conversation is opened
   useEffect(() => {
-    if (conversation && conversation.unread) {
-      onMarkAsRead();
+    if (conversation) {
+      if (conversation.unread) {
+        onMarkAsRead();
+      }
+      setTimeout(() => {
+        textareaRef.current?.focus();
+      }, 50);
     }
   }, [conversation?.id]);
 
@@ -62,7 +67,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     setInputText('');
     setSending(true);
 
-    // Keep focus immediately in textarea
+    // Keep focus immediately
     textareaRef.current?.focus();
 
     try {
@@ -72,10 +77,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       setInputText(textToSend);
     } finally {
       setSending(false);
-      // Re-assert focus
+      // Re-assert focus without losing cursor
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
       setTimeout(() => {
         textareaRef.current?.focus();
-      }, 0);
+      }, 50);
     }
   };
 

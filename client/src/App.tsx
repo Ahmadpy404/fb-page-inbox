@@ -29,15 +29,16 @@ function deduplicateMessages(list: Message[]): Message[] {
   const result: Message[] = [];
 
   for (const m of list) {
+    if (!m) continue;
     if (m.id && seenIds.has(m.id)) continue;
     if (m.fbMessageId && seenFbIds.has(m.fbMessageId)) continue;
 
     const isDuplicateOutbound = result.some(
       (existing) =>
         existing.direction === m.direction &&
-        existing.direction === 'outbound_manual' &&
-        existing.text === m.text &&
-        Math.abs(new Date(existing.createdAt).getTime() - new Date(m.createdAt).getTime()) < 10000
+        (existing.direction === 'outbound_manual' || existing.direction === 'outbound_auto') &&
+        existing.text?.trim() === m.text?.trim() &&
+        Math.abs(new Date(existing.createdAt).getTime() - new Date(m.createdAt).getTime()) < 30000
     );
 
     if (isDuplicateOutbound) continue;
