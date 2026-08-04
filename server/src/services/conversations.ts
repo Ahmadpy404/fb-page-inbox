@@ -22,15 +22,17 @@ export async function getOrCreateConversation(psid: string, initialName?: string
     let userName = initialName;
     let userAvatarUrl: string | undefined;
 
-    // Fetch user profile from Meta Graph API
-    try {
-      const profile = await graphApiClient.getUserProfile(psid);
-      if (profile) {
-        userName = profile.name || profile.first_name ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() : userName;
-        userAvatarUrl = profile.profile_pic;
+    // Fetch user profile from Meta Graph API only if name is not already known
+    if (!userName) {
+      try {
+        const profile = await graphApiClient.getUserProfile(psid);
+        if (profile) {
+          userName = profile.name || (profile.first_name ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() : userName);
+          userAvatarUrl = profile.profile_pic;
+        }
+      } catch (err) {
+        console.warn(`[Conversations] Failed to fetch profile for PSID ${psid}:`, err);
       }
-    } catch (err) {
-      console.warn(`[Conversations] Failed to fetch profile for PSID ${psid}:`, err);
     }
 
     conversation = await prisma.conversation.create({
@@ -42,6 +44,12 @@ export async function getOrCreateConversation(psid: string, initialName?: string
         unread: true,
         autoReplyEnabled: true,
       },
+    });
+  } else if (initialName && (!conversation.userName || conversation.userName.startsWith('User '))) {
+    // If existing conversation has a generic name, upgrade it with the real name
+    conversation = await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { userName: initialName },
     });
   }
 
