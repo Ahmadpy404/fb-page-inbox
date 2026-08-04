@@ -236,10 +236,10 @@ export async function backfillFromGraphApi(): Promise<{
   conversationsSynced: number;
   messagesSynced: number;
 }> {
-  emitSyncStatus({ inProgress: true, message: 'Fetching conversations from Facebook Graph API...' });
+  emitSyncStatus({ inProgress: true, message: 'Fetching conversations from Facebook...' });
 
   try {
-    const fbConversations: GraphApiConversation[] = await graphApiClient.fetchConversations(50);
+    const fbConversations = await graphApiClient.fetchConversationsList(25);
     let conversationsCount = 0;
     let messagesCount = 0;
 
@@ -252,29 +252,40 @@ export async function backfillFromGraphApi(): Promise<{
         message: `Syncing conversation ${i + 1} of ${fbConversations.length}...`,
       });
 
-      // Find user participant (the one whose id is not our page)
-      const participants = fbConv.participants?.data || [];
-      const userParticipant = participants[0]; // first or non-page participant
+      // Fetch messages for this conversation
+      const fbMessages = await graphApiClient.fetchConversationMessages(fbConv.id, 30);
 
-      if (!userParticipant?.id) {
-        continue;
+      // Find user participant / PSID
+      const participants = fbConv.participants?.data || [];
+      let psid = participants[0]?.id;
+      let userName = participants[0]?.name;
+
+      // If PSID wasn't in participants, infer from message sender/receiver
+      if (!psid && fbMessages.length > 0) {
+        for (const msg of fbMessages) {
+          if (msg.from?.id && msg.from.name) {
+            psid = msg.from.id;
+            userName = msg.from.name;
+            break;
+          }
+        }
       }
 
-      const psid = userParticipant.id;
-      const userName = userParticipant.name;
+      if (!psid) {
+        psid = fbConv.id;
+      }
 
       // Upsert conversation
       const conversation = await getOrCreateConversation(psid, userName);
       conversationsCount++;
 
       // Ingest messages
-      const fbMessages = fbConv.messages?.data || [];
       for (const fbMsg of fbMessages) {
         if (!fbMsg.id) continue;
 
         // Determine direction
-        const isFromPage = fbMsg.from?.id !== psid;
-        const direction = isFromPage ? 'outbound_manual' : 'inbound';
+        const isFromUser = fbMsg.from?.id === psid;
+        const direction = isFromUser ? 'inbound' : 'outbound_manual';
         const createdAt = fbMsg.created_time ? new Date(fbMsg.created_time) : new Date();
 
         const existing = await prisma.message.findUnique({
