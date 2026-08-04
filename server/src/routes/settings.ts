@@ -127,4 +127,27 @@ router.post('/subscribe-webhook', async (_req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/settings/diagnostics
+ * Test every Meta endpoint live and report exact statuses.
+ */
+router.get('/diagnostics', async (_req: Request, res: Response) => {
+  try {
+    const page = await graphApiClient.getPageDetails();
+    const convs = await graphApiClient.fetchConversationsList(5, page.id);
+    return res.json({
+      success: true,
+      page,
+      conversationsFound: convs.length,
+      sampleConversation: convs[0] || null,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Diagnostic failed',
+      stack: err.stack,
+    });
+  }
+});
+
 export default router;

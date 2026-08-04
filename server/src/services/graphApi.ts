@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import { getConfig } from '../config';
 
 export interface SendMessageResponse {
@@ -75,11 +76,22 @@ export class GraphApiClient {
   }
 
   private get baseUrl(): string {
-    return getConfig().GRAPH_API_BASE_URL;
+    return getConfig().GRAPH_API_BASE_URL.replace(/\/+$/, '');
   }
 
   private get accessToken(): string {
-    return getConfig().PAGE_ACCESS_TOKEN;
+    return (getConfig().PAGE_ACCESS_TOKEN || '').trim();
+  }
+
+  private get appSecretProof(): string | undefined {
+    try {
+      const secret = (getConfig().APP_SECRET || '').trim();
+      const token = this.accessToken;
+      if (secret && token && !token.startsWith('dev_') && !token.startsWith('test_')) {
+        return crypto.createHmac('sha256', secret).update(token).digest('hex');
+      }
+    } catch {}
+    return undefined;
   }
 
   /**
@@ -93,7 +105,8 @@ export class GraphApiClient {
       };
     }
 
-    const url = `${this.baseUrl}/me/messages?access_token=${encodeURIComponent(this.accessToken)}`;
+    const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
+    const url = `${this.baseUrl}/me/messages?access_token=${encodeURIComponent(this.accessToken)}${proof}`;
     const payload = {
       recipient: { id: psid },
       message: { text },
@@ -104,6 +117,7 @@ export class GraphApiClient {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'User-Agent': 'FBPageUnifiedInbox/1.0',
       },
       body: JSON.stringify(payload),
     });
@@ -210,22 +224,38 @@ export class GraphApiClient {
   /**
    * Fetch conversation list from Meta Graph API
    */
-  async fetchConversationsList(limit: number = 25): Promise<any[]> {
+  async fetchConversationsList(limit: number = 25, pageId?: string): Promise<any[]> {
     if (this.accessToken.startsWith('dev_') || this.accessToken.startsWith('test_')) {
       return [];
     }
 
-    const strategies = [
-      `${this.baseUrl}/me/conversations?limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`,
-      `${this.baseUrl}/me/conversations?fields=id,link,updated_time&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`,
-      `${this.baseUrl}/me/conversations?platform=messenger&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`,
-    ];
+    const token = encodeURIComponent(this.accessToken);
+    const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
+
+    const targets = ['me'];
+    if (pageId && pageId !== 'me') {
+      targets.unshift(pageId);
+    }
+
+    const strategies: string[] = [];
+    for (const target of targets) {
+      strategies.push(
+        `${this.baseUrl}/${target}/conversations?limit=${limit}&access_token=${token}`,
+        `${this.baseUrl}/${target}/conversations?limit=${limit}&access_token=${token}${proof}`,
+        `${this.baseUrl}/${target}/conversations?fields=id,snippet,updated_time&limit=${limit}&access_token=${token}`,
+        `${this.baseUrl}/${target}/conversations?fields=id,link,updated_time&limit=${limit}&access_token=${token}`,
+        `${this.baseUrl}/${target}/conversations?platform=messenger&limit=${limit}&access_token=${token}`
+      );
+    }
 
     let lastErrorMsg = 'Failed to fetch conversations';
 
     for (const url of strategies) {
       try {
-        const response = await this.fetchFn(url, { method: 'GET' });
+        const response = await this.fetchFn(url, {
+          method: 'GET',
+          headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
+        });
         const data = (await response.json()) as any;
 
         if (response.ok && !data?.error && Array.isArray(data.data)) {
@@ -251,9 +281,13 @@ export class GraphApiClient {
       return null;
     }
 
+    const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
     try {
-      const url = `${this.baseUrl}/${encodeURIComponent(conversationId)}?fields=participants,senders&access_token=${encodeURIComponent(this.accessToken)}`;
-      const response = await this.fetchFn(url, { method: 'GET' });
+      const url = `${this.baseUrl}/${encodeURIComponent(conversationId)}?fields=participants,senders&access_token=${encodeURIComponent(this.accessToken)}${proof}`;
+      const response = await this.fetchFn(url, {
+        method: 'GET',
+        headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
+      });
       const data = (await response.json()) as any;
       if (response.ok && !data?.error) {
         return data;
@@ -272,18 +306,27 @@ export class GraphApiClient {
       return [];
     }
 
-    try {
-      const url = `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?fields=id,message,from,to,created_time&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`;
-      const response = await this.fetchFn(url, { method: 'GET' });
-      const data = (await response.json()) as any;
+    const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
+    const urls = [
+      `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?fields=id,message,from,to,created_time&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}${proof}`,
+      `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}${proof}`,
+    ];
 
-      if (response.ok && !data?.error && Array.isArray(data.data)) {
-        return data.data;
-      }
-      return [];
-    } catch {
-      return [];
+    for (const url of urls) {
+      try {
+        const response = await this.fetchFn(url, {
+          method: 'GET',
+          headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
+        });
+        const data = (await response.json()) as any;
+
+        if (response.ok && !data?.error && Array.isArray(data.data)) {
+          return data.data;
+        }
+      } catch {}
     }
+
+    return [];
   }
 
   /**

@@ -253,7 +253,7 @@ export async function backfillFromGraphApi(): Promise<{
       pageId = page?.id || '';
     } catch {}
 
-    const fbConversations = await graphApiClient.fetchConversationsList(30);
+    const fbConversations = await graphApiClient.fetchConversationsList(30, pageId);
     let conversationsCount = 0;
     let messagesCount = 0;
 
