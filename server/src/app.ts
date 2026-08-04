@@ -26,7 +26,7 @@ export function createApp(): express.Application {
   // Capture raw body buffer for webhook signature verification
   app.use(
     express.json({
-      verify: (req: AppRequest, _res, buf) => {
+      verify: (req: AppRequest, _res: any, buf: Buffer) => {
         req.rawBody = buf;
       },
     })
@@ -54,7 +54,7 @@ export function createApp(): express.Application {
       return next();
     }
     const indexHtml = path.join(clientDistPath, 'index.html');
-    res.sendFile(indexHtml, (err) => {
+    res.sendFile(indexHtml, (err: any) => {
       if (err) {
         next();
       }
