@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../db';
 import { getConfig } from '../config';
 import { graphApiClient } from '../services/graphApi';
+import { exchangeForPermanentPageToken } from '../utils/tokenExchanger';
 
 const router = Router();
 
@@ -123,6 +124,30 @@ router.post('/subscribe-webhook', async (_req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       error: err.message || 'Failed to subscribe page to webhooks',
+    });
+  }
+});
+
+/**
+ * POST /api/settings/generate-permanent-token
+ * Exchange any User or Short-Lived Token for a Never-Expiring Permanent Page Access Token.
+ */
+router.post('/generate-permanent-token', async (req: Request, res: Response) => {
+  try {
+    const { inputToken } = req.body;
+    if (!inputToken) {
+      return res.status(400).json({ error: 'inputToken is required' });
+    }
+
+    const result = await exchangeForPermanentPageToken(inputToken);
+    return res.json({
+      success: true,
+      ...result,
+    });
+  } catch (err: any) {
+    return res.status(400).json({
+      success: false,
+      error: err.message || 'Failed to exchange token for permanent token',
     });
   }
 });
