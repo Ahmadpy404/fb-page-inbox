@@ -132,22 +132,44 @@ router.post('/subscribe-webhook', async (_req: Request, res: Response) => {
  * Test every Meta endpoint live and report exact statuses.
  */
 router.get('/diagnostics', async (_req: Request, res: Response) => {
-  try {
-    const page = await graphApiClient.getPageDetails();
-    const convs = await graphApiClient.fetchConversationsList(5, page.id);
-    return res.json({
-      success: true,
-      page,
-      conversationsFound: convs.length,
-      sampleConversation: convs[0] || null,
-    });
-  } catch (err: any) {
-    return res.status(500).json({
-      success: false,
-      error: err.message || 'Diagnostic failed',
-      stack: err.stack,
-    });
+  const token = (getConfig().PAGE_ACCESS_TOKEN || '').trim();
+  const secret = (getConfig().APP_SECRET || '').trim();
+  const page = await graphApiClient.getPageDetails().catch((e: any) => ({ error: e.message }));
+  const pageId = (page as any)?.id || '752790171249695';
+
+  const testUrls = [
+    `https://graph.facebook.com/v19.0/${pageId}/conversations?access_token=${token}`,
+    `https://graph.facebook.com/v21.0/${pageId}/conversations?access_token=${token}`,
+    `https://graph.facebook.com/v22.0/${pageId}/conversations?access_token=${token}`,
+    `https://graph.facebook.com/v19.0/me/conversations?access_token=${token}`,
+    `https://graph.facebook.com/v21.0/me/conversations?access_token=${token}`,
+    `https://graph.facebook.com/v19.0/${pageId}?fields=conversations&access_token=${token}`,
+    `https://graph.facebook.com/v19.0/me?fields=conversations&access_token=${token}`,
+  ];
+
+  const results: any[] = [];
+  for (const url of testUrls) {
+    try {
+      const response = await fetch(url, { headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' } });
+      const body = (await response.json()) as any;
+      results.push({
+        url: url.replace(token, 'TOKEN_MASKED'),
+        status: response.status,
+        hasData: Array.isArray(body?.data) || Boolean(body?.conversations?.data),
+        dataLength: body?.data?.length || body?.conversations?.data?.length || 0,
+        body,
+      });
+    } catch (err: any) {
+      results.push({ url: url.replace(token, 'TOKEN_MASKED'), error: err.message });
+    }
   }
+
+  return res.json({
+    tokenLength: token.length,
+    secretLength: secret.length,
+    page,
+    results,
+  });
 });
 
 export default router;
