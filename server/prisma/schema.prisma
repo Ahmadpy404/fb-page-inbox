@@ -1,0 +1,49 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Conversation {
+  id               String    @id @default(cuid())
+  psid             String    @unique
+  userName         String?
+  userAvatarUrl    String?
+  lastMessageAt    DateTime  @default(now())
+  autoReplyEnabled Boolean   @default(true)
+  unread           Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  messages         Message[]
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction      String       // "inbound" | "outbound_manual" | "outbound_auto"
+  text           String
+  attachments    String?      // Optional JSON stringified attachments array
+  createdAt      DateTime     @default(now())
+  fbMessageId    String?      @unique
+}
+
+model Rule {
+  id        String   @id @default(cuid())
+  keyword   String
+  matchType String   // "exact" | "contains" | "regex"
+  replyText String
+  priority  Int      @default(0)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

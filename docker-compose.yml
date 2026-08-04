@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fb_page_unified_inbox
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - DATABASE_URL=file:/data/app.db
+      - APP_SECRET=${APP_SECRET}
+      - PAGE_ACCESS_TOKEN=${PAGE_ACCESS_TOKEN}
+      - VERIFY_TOKEN=${VERIFY_TOKEN}
+      - GRAPH_API_BASE_URL=${GRAPH_API_BASE_URL:-https://graph.facebook.com/v19.0}
+      - NODE_ENV=production
+    volumes:
+      - fb_data:/data
+
+volumes:
+  fb_data:

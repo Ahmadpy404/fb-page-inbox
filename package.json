@@ -1,0 +1,37 @@
+{
+  "name": "fb-page-unified-inbox-root",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Unified inbox for Facebook Page Messenger conversations with auto-reply engine",
+  "scripts": {
+    "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,magenta\" \"npm run dev --workspace=server\" \"npm run dev --workspace=client\"",
+    "build": "npm run prisma:generate --workspace=server && npm run prisma:push --workspace=server && npm run build --workspace=server && npm run build --workspace=client",
+    "start": "node server/dist/server.js",
+    "test": "npm run test:backend && npm run test:e2e",
+    "test:backend": "npm run test --workspace=server",
+    "test:unit": "npm run test:unit --workspace=server",
+    "test:integration": "npm run test:integration --workspace=server",
+    "test:e2e": "playwright test",
+    "prisma:generate": "npm run prisma:generate --workspace=server",
+    "prisma:push": "npm run prisma:push --workspace=server",
+    "prisma:seed": "npm run prisma:seed --workspace=server"
+  },
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "devDependencies": {
+    "@playwright/test": "^1.42.0",
+    "concurrently": "^8.2.2"
+  },
+  "keywords": [
+    "facebook",
+    "messenger",
+    "unified-inbox",
+    "meta-graph-api",
+    "webhooks",
+    "auto-reply"
+  ],
+  "author": "",
+  "license": "MIT"
+}
