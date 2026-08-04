@@ -7,6 +7,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Page {
+  id            String         @id @default(cuid())
+  pageId        String         @unique // Facebook Page ID e.g. "752790171249695"
+  name          String         // e.g. "Flirt with Fortune"
+  accessToken   String         // Permanent Page Access Token
+  pictureUrl    String?
+  appSecret     String?
+  isActive      Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  conversations Conversation[]
+  rules         Rule[]
+}
+
 model Conversation {
   id               String    @id @default(cuid())
   psid             String    @unique
@@ -15,6 +29,8 @@ model Conversation {
   lastMessageAt    DateTime  @default(now())
   autoReplyEnabled Boolean   @default(true)
   unread           Boolean   @default(false)
+  pageId           String?
+  page             Page?     @relation(fields: [pageId], references: [id], onDelete: Cascade)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   messages         Message[]
@@ -26,7 +42,7 @@ model Message {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   direction      String       // "inbound" | "outbound_manual" | "outbound_auto"
   text           String
-  attachments    String?      // Optional JSON stringified attachments array
+  attachments    String?      // Optional JSON stringified attachments array [{type: "image"|"video", url: "..."}]
   createdAt      DateTime     @default(now())
   fbMessageId    String?      @unique
 }
@@ -38,6 +54,8 @@ model Rule {
   replyText String
   priority  Int      @default(0)
   enabled   Boolean  @default(true)
+  pageId    String?
+  page      Page?    @relation(fields: [pageId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

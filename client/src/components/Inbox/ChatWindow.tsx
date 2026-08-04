@@ -1,12 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Bot, BellOff, MessageSquare, Check, Sparkles } from 'lucide-react';
-import { Conversation, Message } from '../../types';
+import {
+  Send,
+  Bot,
+  BellOff,
+  MessageSquare,
+  Check,
+  Sparkles,
+  Paperclip,
+  Video as VideoIcon,
+  X,
+  Maximize2,
+  Download,
+} from 'lucide-react';
+import { Conversation, Message, AttachmentItem } from '../../types';
 
 interface ChatWindowProps {
   conversation: Conversation | null;
   messages: Message[];
   loading: boolean;
-  onSendReply: (text: string) => Promise<void>;
+  onSendReply: (text?: string, mediaFile?: File) => Promise<void>;
   onToggleAutoReply: (enabled?: boolean) => Promise<void>;
   onMarkAsRead: () => Promise<void>;
 }
@@ -41,13 +53,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 }) => {
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, filePreviewUrl]);
 
   // Mark as read and auto-focus when conversation is opened
   useEffect(() => {
@@ -61,23 +79,55 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   }, [conversation?.id]);
 
+  // Handle selected file change
+  useEffect(() => {
+    if (!selectedFile) {
+      setFilePreviewUrl(null);
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(selectedFile);
+    setFilePreviewUrl(objectUrl);
+
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [selectedFile]);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+    }
+    // Reset input so re-selecting same file triggers change
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removeSelectedFile = () => {
+    setSelectedFile(null);
+    setFilePreviewUrl(null);
+  };
+
   const handleSend = async () => {
-    if (!inputText.trim() || sending) return;
+    if ((!inputText.trim() && !selectedFile) || sending) return;
+
     const textToSend = inputText.trim();
+    const fileToSend = selectedFile;
+
     setInputText('');
+    setSelectedFile(null);
+    setFilePreviewUrl(null);
     setSending(true);
 
-    // Keep focus immediately
+    // Maintain focus
     textareaRef.current?.focus();
 
     try {
-      await onSendReply(textToSend);
+      await onSendReply(textToSend || undefined, fileToSend || undefined);
     } catch (err) {
       console.error('Failed to send reply:', err);
       setInputText(textToSend);
+      setSelectedFile(fileToSend);
     } finally {
       setSending(false);
-      // Re-assert focus without losing cursor
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
       });
@@ -94,6 +144,36 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   };
 
+  // Drag and drop handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) {
+      setSelectedFile(file);
+    }
+  };
+
+  // Parse attachments from message JSON
+  const parseAttachments = (attachmentsStr?: string | null): AttachmentItem[] => {
+    if (!attachmentsStr) return [];
+    try {
+      const parsed = JSON.parse(attachmentsStr);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
   if (!conversation) {
     return (
       <main className="chat-window">
@@ -107,7 +187,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   }
 
   return (
-    <main className="chat-window">
+    <main
+      className={`chat-window ${isDragging ? 'drag-over' : ''}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Header */}
       <header className="chat-header">
         <div className="chat-user-meta">
@@ -123,7 +208,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             )}
           </div>
           <div className="chat-user-details">
-            <h2>{conversation.userName || `User ${conversation.psid.slice(-6)}`}</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <h2>{conversation.userName || `User ${conversation.psid.slice(-6)}`}</h2>
+              {conversation.page?.name && (
+                <span className="page-context-tag">{conversation.page.name}</span>
+              )}
+            </div>
             <div className="psid-chip">PSID: {conversation.psid}</div>
           </div>
         </div>
@@ -169,6 +259,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             const isInbound = msg.direction === 'inbound';
             const isAuto = msg.direction === 'outbound_auto';
             const isManual = msg.direction === 'outbound_manual';
+            const attachments = parseAttachments(msg.attachments);
 
             return (
               <div
@@ -191,7 +282,43 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                       <span>Keyword Auto-Reply</span>
                     </div>
                   )}
-                  <div>{msg.text}</div>
+
+                  {/* Render media attachments if present */}
+                  {attachments.map((att, idx) => {
+                    const isVideo = att.type === 'video' || att.url?.match(/\.(mp4|mov|webm)$/i);
+                    const isImage = att.type === 'image' || att.url?.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+
+                    if (isVideo) {
+                      return (
+                        <div key={idx} className="media-attachment-container video-box">
+                          <video controls className="chat-media-video" src={att.url} preload="metadata" />
+                        </div>
+                      );
+                    }
+
+                    if (isImage || att.url) {
+                      return (
+                        <div
+                          key={idx}
+                          className="media-attachment-container image-box"
+                          onClick={() => setLightboxImage(att.url)}
+                          title="Click to view full size"
+                        >
+                          <img src={att.url} alt={att.title || 'Attachment'} className="chat-media-image" />
+                          <div className="image-zoom-overlay">
+                            <Maximize2 size={16} />
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return null;
+                  })}
+
+                  {/* Message text */}
+                  {msg.text && (
+                    <div className="message-text-content">{msg.text}</div>
+                  )}
                 </div>
 
                 <div className="message-meta">
@@ -219,23 +346,70 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         ))}
       </div>
 
+      {/* Staged File Preview */}
+      {selectedFile && filePreviewUrl && (
+        <div className="staged-media-bar">
+          <div className="staged-media-preview">
+            {selectedFile.type.startsWith('video/') ? (
+              <div className="media-thumbnail-box video">
+                <VideoIcon size={20} color="#fff" />
+              </div>
+            ) : (
+              <img src={filePreviewUrl} alt="Preview" className="media-thumbnail-img" />
+            )}
+            <div className="staged-file-meta">
+              <span className="file-name">{selectedFile.name}</span>
+              <span className="file-size">{(selectedFile.size / (1024 * 1024)).toFixed(2)} MB</span>
+            </div>
+          </div>
+          <button className="icon-btn remove-media-btn" onClick={removeSelectedFile} title="Remove attachment">
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
       {/* Input Bar */}
       <footer className="chat-input-bar">
+        {/* Hidden file input */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleFileSelect}
+          accept="image/*,video/*"
+          style={{ display: 'none' }}
+          id="file-attachment-input"
+        />
+
         <div className="input-wrapper">
+          <button
+            type="button"
+            className="attach-btn"
+            onClick={() => fileInputRef.current?.click()}
+            title="Attach Photo or Video"
+            id="btn-attach-media"
+          >
+            <Paperclip size={18} />
+          </button>
+
           <textarea
             ref={textareaRef}
             className="chat-textarea"
-            placeholder={`Reply to ${conversation.userName || 'user'}... (Press Enter to send, Shift+Enter for new line)`}
+            placeholder={
+              selectedFile
+                ? 'Add an optional message or press Enter to send media...'
+                : `Reply to ${conversation.userName || 'user'}... (Press Enter to send)`
+            }
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
             rows={1}
             id="input-chat-reply"
           />
+
           <button
             className="send-btn"
             onClick={handleSend}
-            disabled={!inputText.trim() || sending}
+            disabled={(!inputText.trim() && !selectedFile) || sending}
             title="Send Message (Enter)"
             id="btn-send-reply"
           >
@@ -243,6 +417,36 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           </button>
         </div>
       </footer>
+
+      {/* Full-Screen Image Lightbox */}
+      {lightboxImage && (
+        <div className="lightbox-overlay" onClick={() => setLightboxImage(null)}>
+          <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
+            <img src={lightboxImage} alt="Full Size Preview" className="lightbox-img" />
+            <div className="lightbox-actions">
+              <a
+                href={lightboxImage}
+                target="_blank"
+                rel="noreferrer"
+                download
+                className="lightbox-action-btn"
+                title="Download original"
+              >
+                <Download size={16} />
+                <span>Open / Download</span>
+              </a>
+              <button
+                className="lightbox-action-btn close"
+                onClick={() => setLightboxImage(null)}
+                title="Close"
+              >
+                <X size={16} />
+                <span>Close</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 };

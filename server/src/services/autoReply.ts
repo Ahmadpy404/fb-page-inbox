@@ -77,7 +77,7 @@ export async function isGlobalAutoReplyEnabled(): Promise<boolean> {
 }
 
 /**
- * Process inbound message through auto-reply engine.
+ * Process inbound message through auto-reply engine with multi-page awareness.
  */
 export async function processAutoReply(
   conversationId: string,
@@ -95,9 +95,10 @@ export async function processAutoReply(
     return { matched: false };
   }
 
-  // 2. Check per-conversation auto-reply status
+  // 2. Check per-conversation auto-reply status & get page token
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
+    include: { page: true },
   });
 
   if (!conversation || !conversation.autoReplyEnabled) {
@@ -105,9 +106,15 @@ export async function processAutoReply(
     return { matched: false };
   }
 
-  // 3. Fetch active rules ordered by priority
+  // 3. Fetch active rules for this specific page OR global rules
   const rules = await prisma.rule.findMany({
-    where: { enabled: true },
+    where: {
+      enabled: true,
+      OR: [
+        { pageId: conversation.pageId },
+        { pageId: null },
+      ],
+    },
     orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
   });
 
@@ -118,9 +125,10 @@ export async function processAutoReply(
 
   console.log(`[AutoReply] Rule "${matchingRule.keyword}" (${matchingRule.matchType}) matched for PSID ${userPsid}. Sending reply...`);
 
-  // 4. Send the automatic reply via Graph API
+  // 4. Send the automatic reply via Graph API with page token
   try {
-    const sendResult = await graphApiClient.sendMessage(userPsid, matchingRule.replyText);
+    const pageToken = conversation.page?.accessToken;
+    const sendResult = await graphApiClient.sendMessage(userPsid, matchingRule.replyText, pageToken);
 
     // 5. Store outbound_auto message in DB
     const autoReplyMessage = await prisma.message.create({

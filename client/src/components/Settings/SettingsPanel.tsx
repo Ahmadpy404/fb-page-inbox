@@ -1,24 +1,49 @@
 import React, { useState } from 'react';
-import { Bot, RefreshCw, CheckCircle2, XCircle, Copy, Check, ExternalLink, ShieldCheck } from 'lucide-react';
-import { SettingsData, SyncStatus } from '../../types';
+import {
+  Bot,
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  Copy,
+  Check,
+  ExternalLink,
+  ShieldCheck,
+  Volume2,
+  Bell,
+  Globe,
+  Plus,
+  Trash2,
+} from 'lucide-react';
+import { SettingsData, SyncStatus, PageData } from '../../types';
 
 interface SettingsPanelProps {
   settings: SettingsData | null;
   syncStatus?: SyncStatus;
+  pages: PageData[];
   onUpdateGlobalAutoReply: (enabled: boolean) => Promise<void>;
   onVerifyConnection: () => Promise<void>;
   onTriggerSync: () => Promise<void>;
+  onOpenAddModal: () => void;
+  onDeletePage: (id: string) => Promise<void>;
+  onPlayLoudNotification: () => void;
 }
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   settings,
   syncStatus,
+  pages,
   onUpdateGlobalAutoReply,
   onVerifyConnection,
   onTriggerSync,
+  onOpenAddModal,
+  onDeletePage,
+  onPlayLoudNotification,
 }) => {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [notificationStatus, setNotificationStatus] = useState<string>(
+    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
+  );
 
   const copyToClipboard = (text: string, fieldId: string) => {
     navigator.clipboard.writeText(text);
@@ -35,19 +60,163 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     }
   };
 
+  const requestNotificationPermission = async () => {
+    if ('Notification' in window) {
+      const permission = await Notification.requestPermission();
+      setNotificationStatus(permission);
+      if (permission === 'granted') {
+        new Notification('Notifications Enabled!', {
+          body: 'You will now receive loud, real-time alerts for incoming Messenger chats.',
+          icon: '/favicon.ico',
+        });
+      }
+    }
+  };
+
   const webhookUrl = `${window.location.origin}/webhook/facebook`;
 
   return (
     <div className="settings-container">
       <header className="page-header">
         <div className="page-title-group">
-          <h2>Settings & Configuration</h2>
-          <p>Manage global automation policies, Meta Graph API connection, and history backfills.</p>
+          <h2>Settings & Multi-Page Management</h2>
+          <p>Manage connected Facebook Pages, sound alerts, browser notifications, and automation rules.</p>
         </div>
       </header>
 
       <div className="settings-grid">
-        {/* 1. Global Auto-Reply Master Toggle */}
+        {/* 1. Connected Facebook Pages Manager */}
+        <section className="setting-card" style={{ gridColumn: '1 / -1' }}>
+          <div className="card-header-row">
+            <div className="card-title-group">
+              <h3>
+                <Globe size={18} color="var(--accent-primary)" />
+                Connected Facebook Pages ({pages.length})
+              </h3>
+              <p>Manage all connected Facebook Pages and their individual Messenger inboxes.</p>
+            </div>
+            <button className="primary-btn" onClick={onOpenAddModal} id="btn-add-page-settings">
+              <Plus size={15} />
+              <span>Connect New Page</span>
+            </button>
+          </div>
+
+          <div className="pages-table-wrapper">
+            <table className="pages-table">
+              <thead>
+                <tr>
+                  <th>Page</th>
+                  <th>Page ID</th>
+                  <th>Status</th>
+                  <th>Conversations</th>
+                  <th>Unread</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pages.map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      <div className="page-cell-brand">
+                        <div className="avatar-placeholder mini">
+                          {p.pictureUrl ? (
+                            <img src={p.pictureUrl} alt={p.name} className="avatar-img" />
+                          ) : (
+                            p.name.slice(0, 2).toUpperCase()
+                          )}
+                        </div>
+                        <span className="page-cell-name">{p.name}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <code className="code-chip">{p.pageId}</code>
+                    </td>
+                    <td>
+                      <span className="status-badge active">
+                        <CheckCircle2 size={12} color="#10b981" />
+                        Connected
+                      </span>
+                    </td>
+                    <td>{p.totalConversations || 0}</td>
+                    <td>
+                      {(p.unreadConversations || 0) > 0 ? (
+                        <span className="unread-counter-badge">{p.unreadConversations}</span>
+                      ) : (
+                        '0'
+                      )}
+                    </td>
+                    <td>
+                      {pages.length > 1 && (
+                        <button
+                          className="icon-btn delete-btn"
+                          onClick={() => {
+                            if (confirm(`Are you sure you want to disconnect ${p.name}?`)) {
+                              onDeletePage(p.id);
+                            }
+                          }}
+                          title="Disconnect Page"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* 2. Notification Sound & Browser Push Alert */}
+        <section className="setting-card">
+          <div className="card-header-row">
+            <div className="card-title-group">
+              <h3>
+                <Volume2 size={18} color="#8b5cf6" />
+                Loud Audio Alert & Browser Notifications
+              </h3>
+              <p>Crystal-clear chime sound and instant desktop notifications when clients message.</p>
+            </div>
+            <button
+              className="secondary-btn"
+              onClick={onPlayLoudNotification}
+              title="Test the loud notification chime"
+              id="btn-test-loud-sound"
+            >
+              <Volume2 size={15} />
+              <span>Test Loud Chime</span>
+            </button>
+          </div>
+
+          <div className="info-field-group">
+            <div className="info-item">
+              <div className="info-label">Browser Push Notification Permission</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+                <span
+                  style={{
+                    fontWeight: 600,
+                    color: notificationStatus === 'granted' ? '#34d399' : '#f59e0b',
+                  }}
+                >
+                  {notificationStatus === 'granted' ? 'Enabled (Active)' : 'Permission Required'}
+                </span>
+                {notificationStatus !== 'granted' && (
+                  <button className="primary-btn mini" onClick={requestNotificationPermission}>
+                    <Bell size={12} />
+                    <span>Enable Push Notifications</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="info-item">
+              <div className="info-label">Alert Sound Type</div>
+              <div className="info-value">High-Gain Harmonic Triad Bell (Loud)</div>
+            </div>
+          </div>
+        </section>
+
+        {/* 3. Global Auto-Reply Master Toggle */}
         <section className="setting-card">
           <div className="card-header-row">
             <div className="card-title-group">
@@ -55,7 +224,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <Bot size={18} color="var(--accent-primary)" />
                 Global Auto-Reply Master Switch
               </h3>
-              <p>When turned off, no automated replies will be sent to any conversation, regardless of individual rules.</p>
+              <p>When turned off, no automated replies will be sent, regardless of individual rules.</p>
             </div>
             <label className="switch">
               <input
@@ -69,7 +238,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </div>
         </section>
 
-        {/* 2. Facebook Page Connection Health */}
+        {/* 4. Meta Graph API Connection Health */}
         <section className="setting-card">
           <div className="card-header-row">
             <div className="card-title-group">
@@ -97,7 +266,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 {settings?.facebookStatus.connected ? (
                   <>
                     <CheckCircle2 size={16} color="#10b981" />
-                    <span style={{ color: '#34d399', fontWeight: 600 }}>Active & Verified</span>
+                    <span style={{ color: '#34d399', fontWeight: 600 }}>Active & Verified (Lifetime Token)</span>
                   </>
                 ) : (
                   <>
@@ -111,7 +280,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             </div>
 
             <div className="info-item">
-              <div className="info-label">Connected Facebook Page</div>
+              <div className="info-label">Active Facebook Page</div>
               <div className="info-value">{settings?.facebookStatus.pageName || 'Not Available'}</div>
             </div>
 
@@ -122,7 +291,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </div>
         </section>
 
-        {/* 3. Webhook Integration Details */}
+        {/* 5. Webhook Integration Details */}
         <section className="setting-card">
           <div className="card-header-row">
             <div className="card-title-group">
@@ -152,7 +321,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
           <div className="info-field-group">
             <div className="info-item" style={{ gridColumn: '1 / -1' }}>
-              <div className="info-label">Webhook Callback URL (Use with Cloudflare tunnel / ngrok)</div>
+              <div className="info-label">Webhook Callback URL</div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '4px' }}>
                 <span className="info-value">{webhookUrl}</span>
                 <button
@@ -164,20 +333,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 </button>
               </div>
             </div>
-
-            <div className="info-item">
-              <div className="info-label">Subscribed Webhook Fields</div>
-              <div className="info-value">messages, message_echoes, messaging_postbacks</div>
-            </div>
-
-            <div className="info-item">
-              <div className="info-label">Security Signature</div>
-              <div className="info-value">HMAC-SHA256 (X-Hub-Signature-256)</div>
-            </div>
           </div>
         </section>
 
-        {/* 4. History Backfill / Synchronization */}
+        {/* 6. History Backfill / Synchronization */}
         <section className="setting-card">
           <div className="card-header-row">
             <div className="card-title-group">
@@ -185,7 +344,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <RefreshCw size={18} color="#f59e0b" />
                 Facebook History Backfill
               </h3>
-              <p>Fetch existing conversations and prior message history from Facebook Graph API to populate the local database.</p>
+              <p>Fetch existing conversations and prior message history from Facebook Graph API.</p>
             </div>
             <button
               className="secondary-btn"
@@ -213,18 +372,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <span style={{ color: 'var(--text-secondary)' }}>Status:</span>
                 <span style={{ fontWeight: 600, color: 'var(--accent-primary)' }}>{syncStatus.message || 'Ready'}</span>
               </div>
-              {syncStatus.total && syncStatus.synced && (
-                <div style={{ width: '100%', height: '6px', background: '#e2e8f0', borderRadius: '3px', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      height: '100%',
-                      background: 'var(--accent-primary)',
-                      width: `${Math.min(100, Math.round((syncStatus.synced / syncStatus.total) * 100))}%`,
-                      transition: 'width 200ms ease',
-                    }}
-                  />
-                </div>
-              )}
             </div>
           )}
         </section>

@@ -1,10 +1,14 @@
-import { Conversation, Message, Rule, SettingsData, MatchType } from '../types';
+import { Conversation, Message, Rule, SettingsData, MatchType, PageData } from '../types';
 
 const API_BASE = '/api';
 
-export async function fetchConversations(search?: string): Promise<Conversation[]> {
-  const url = search ? `${API_BASE}/conversations?search=${encodeURIComponent(search)}` : `${API_BASE}/conversations`;
-  const res = await fetch(url);
+export async function fetchConversations(search?: string, pageId?: string): Promise<Conversation[]> {
+  const params = new URLSearchParams();
+  if (search) params.append('search', search);
+  if (pageId && pageId !== 'all') params.append('pageId', pageId);
+
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${API_BASE}/conversations${qs}`);
   if (!res.ok) throw new Error('Failed to fetch conversations');
   const data = await res.json();
   return data.conversations || [];
@@ -18,12 +22,30 @@ export async function fetchConversationMessages(
   return res.json();
 }
 
-export async function sendReply(conversationId: string, text: string): Promise<{ message: Message; conversation: Conversation }> {
-  const res = await fetch(`${API_BASE}/conversations/${conversationId}/reply`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  });
+export async function sendReply(
+  conversationId: string,
+  text?: string,
+  mediaFile?: File
+): Promise<{ message: Message; conversation: Conversation }> {
+  let res: Response;
+
+  if (mediaFile) {
+    const formData = new FormData();
+    if (text) formData.append('text', text);
+    formData.append('media', mediaFile);
+
+    res = await fetch(`${API_BASE}/conversations/${conversationId}/reply`, {
+      method: 'POST',
+      body: formData,
+    });
+  } else {
+    res = await fetch(`${API_BASE}/conversations/${conversationId}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Failed to send reply' }));
     throw new Error(err.error || 'Failed to send reply');
@@ -52,15 +74,56 @@ export async function markConversationAsRead(conversationId: string): Promise<{ 
   return res.json();
 }
 
-export async function triggerSync(): Promise<{ success: boolean; conversationsSynced: number; messagesSynced: number }> {
+export async function triggerSync(pageId?: string): Promise<{ success: boolean; conversationsSynced: number; messagesSynced: number }> {
   const res = await fetch(`${API_BASE}/conversations/sync`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pageId }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Failed to sync' }));
     throw new Error(err.error || 'Failed to sync conversations');
   }
   return res.json();
+}
+
+export async function fetchPages(): Promise<PageData[]> {
+  const res = await fetch(`${API_BASE}/pages`);
+  if (!res.ok) throw new Error('Failed to fetch pages');
+  return res.json();
+}
+
+export async function addPage(token: string, name?: string, pageId?: string): Promise<{ success: boolean; page: PageData }> {
+  const res = await fetch(`${API_BASE}/pages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, name, pageId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to add page' }));
+    throw new Error(err.error || 'Failed to add page');
+  }
+  return res.json();
+}
+
+export async function updatePage(id: string, updates: Partial<{ name: string; isActive: boolean; accessToken: string }>): Promise<{ success: boolean; page: PageData }> {
+  const res = await fetch(`${API_BASE}/pages/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error('Failed to update page');
+  return res.json();
+}
+
+export async function deletePage(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/pages/${id}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to delete page' }));
+    throw new Error(err.error || 'Failed to delete page');
+  }
 }
 
 export async function fetchRules(): Promise<Rule[]> {

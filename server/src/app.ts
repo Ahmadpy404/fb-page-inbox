@@ -1,10 +1,12 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import webhookRoutes from './routes/webhook';
 import conversationsRoutes from './routes/conversations';
 import rulesRoutes from './routes/rules';
 import settingsRoutes from './routes/settings';
+import pagesRoutes from './routes/pages';
 
 // Custom request interface with rawBody buffer
 export interface AppRequest extends Request {
@@ -14,6 +16,12 @@ export interface AppRequest extends Request {
 export function createApp(): express.Application {
   const app = express();
 
+  // Ensure uploads directory exists
+  const uploadsDir = path.resolve(__dirname, '../../uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
   // Enable CORS
   app.use(
     cors({
@@ -22,6 +30,9 @@ export function createApp(): express.Application {
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Hub-Signature-256'],
     })
   );
+
+  // Serve media uploads
+  app.use('/uploads', express.static(uploadsDir));
 
   // Capture raw body buffer for webhook signature verification
   app.use(
@@ -44,13 +55,14 @@ export function createApp(): express.Application {
   app.use('/api/conversations', conversationsRoutes);
   app.use('/api/rules', rulesRoutes);
   app.use('/api/settings', settingsRoutes);
+  app.use('/api/pages', pagesRoutes);
 
   // Serve static client assets if built in production
   const clientDistPath = path.resolve(__dirname, '../../client/dist');
   app.use(express.static(clientDistPath));
 
   app.get('*', (req: Request, res: Response, next: NextFunction) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/webhook')) {
+    if (req.path.startsWith('/api') || req.path.startsWith('/webhook') || req.path.startsWith('/uploads')) {
       return next();
     }
     const indexHtml = path.join(clientDistPath, 'index.html');

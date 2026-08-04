@@ -49,7 +49,12 @@ router.post('/facebook', async (req: RequestWithRawBody, res: Response) => {
   const isValid = verifySignature(rawBody, signature, config.APP_SECRET);
 
   if (!isValid) {
-    console.warn('[Webhook] Warning: X-Hub-Signature-256 signature verification did not match or APP_SECRET is missing. Ingesting event in dev mode...');
+    if (config.NODE_ENV === 'development') {
+      console.warn('[Webhook] Warning: X-Hub-Signature-256 signature verification did not match or APP_SECRET is missing. Ingesting event in dev mode...');
+    } else {
+      console.warn('[Webhook] Unauthorized: Invalid X-Hub-Signature-256 signature.');
+      return res.status(403).json({ error: 'Forbidden: Invalid signature' });
+    }
   } else {
     console.log('[Webhook] X-Hub-Signature-256 verified successfully.');
   }

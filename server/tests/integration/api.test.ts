@@ -89,7 +89,8 @@ describe('Conversations, Rules & Settings REST API Integration Tests', () => {
 
       expect(graphApiClient.sendMessage).toHaveBeenCalledWith(
         'PSID_CONV_1',
-        'Thanks for reaching out! Here is our reply.'
+        'Thanks for reaching out! Here is our reply.',
+        undefined
       );
     });
 

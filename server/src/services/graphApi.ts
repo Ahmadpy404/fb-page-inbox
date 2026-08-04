@@ -97,16 +97,16 @@ export class GraphApiClient {
   /**
    * Send a text message to a user via their Page-Scoped ID (PSID)
    */
-  async sendMessage(psid: string, text: string): Promise<SendMessageResponse> {
-    if (this.accessToken.startsWith('dev_') || this.accessToken.startsWith('test_')) {
+  async sendMessage(psid: string, text: string, customToken?: string): Promise<SendMessageResponse> {
+    const token = customToken || this.accessToken;
+    if (token.startsWith('dev_') || token.startsWith('test_')) {
       return {
         recipient_id: psid,
         message_id: `mid.mock.${Date.now()}`,
       };
     }
 
-    const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
-    const url = `${this.baseUrl}/me/messages?access_token=${encodeURIComponent(this.accessToken)}${proof}`;
+    const url = `${this.baseUrl}/me/messages?access_token=${encodeURIComponent(token)}`;
     const payload = {
       recipient: { id: psid },
       message: { text },
@@ -127,6 +127,92 @@ export class GraphApiClient {
     if (!response.ok || data?.error) {
       const errorMsg = data?.error?.message || response.statusText || 'Failed to send message';
       throw new Error(`Meta Graph API Error (${response.status}): ${errorMsg}`);
+    }
+
+    return data as SendMessageResponse;
+  }
+
+  /**
+   * Send a media attachment (photo / video) to a user via PSID
+   */
+  async sendMediaAttachment(
+    psid: string,
+    attachmentType: 'image' | 'video' | 'audio' | 'file',
+    mediaUrlOrBuffer: string | Buffer,
+    filename: string = 'media',
+    mimeType: string = 'image/jpeg',
+    customToken?: string
+  ): Promise<SendMessageResponse> {
+    const token = customToken || this.accessToken;
+    if (token.startsWith('dev_') || token.startsWith('test_')) {
+      return {
+        recipient_id: psid,
+        message_id: `mid.mock.${Date.now()}`,
+      };
+    }
+
+    const url = `${this.baseUrl}/me/messages?access_token=${encodeURIComponent(token)}`;
+
+    // 1. If mediaUrl is a string URL
+    if (typeof mediaUrlOrBuffer === 'string') {
+      const payload = {
+        recipient: { id: psid },
+        message: {
+          attachment: {
+            type: attachmentType,
+            payload: {
+              url: mediaUrlOrBuffer,
+              is_reusable: true,
+            },
+          },
+        },
+        messaging_type: 'RESPONSE',
+      };
+
+      const response = await this.fetchFn(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'FBPageUnifiedInbox/1.0',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = (await response.json()) as any;
+      if (!response.ok || data?.error) {
+        throw new Error(`Meta Graph API Error (${response.status}): ${data?.error?.message || 'Failed to send media'}`);
+      }
+      return data as SendMessageResponse;
+    }
+
+    // 2. Binary buffer upload using FormData
+    const formData = new FormData();
+    formData.append('recipient', JSON.stringify({ id: psid }));
+    formData.append(
+      'message',
+      JSON.stringify({
+        attachment: {
+          type: attachmentType,
+          payload: { is_reusable: true },
+        },
+      })
+    );
+    formData.append('messaging_type', 'RESPONSE');
+
+    const blob = new Blob([mediaUrlOrBuffer], { type: mimeType });
+    formData.append('filedata', blob, filename);
+
+    const response = await this.fetchFn(url, {
+      method: 'POST',
+      headers: {
+        'User-Agent': 'FBPageUnifiedInbox/1.0',
+      },
+      body: formData as any,
+    });
+
+    const data = (await response.json()) as any;
+    if (!response.ok || data?.error) {
+      throw new Error(`Meta Graph API Error (${response.status}): ${data?.error?.message || 'Failed to upload and send media'}`);
     }
 
     return data as SendMessageResponse;

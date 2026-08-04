@@ -4,6 +4,7 @@ import { ConversationList } from './components/Inbox/ConversationList';
 import { ChatWindow } from './components/Inbox/ChatWindow';
 import { RulesManager } from './components/Rules/RulesManager';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
+import { AddPageModal } from './components/Pages/AddPageModal';
 import {
   fetchConversations,
   fetchConversationMessages,
@@ -19,9 +20,11 @@ import {
   updateGlobalAutoReply,
   verifyFacebookConnection,
   triggerSync,
+  fetchPages,
+  deletePage,
 } from './services/api';
 import { getSocket, subscribeToRealtimeEvents } from './services/socket';
-import { Conversation, Message, Rule, SettingsData, SyncStatus } from './types';
+import { Conversation, Message, Rule, SettingsData, SyncStatus, PageData } from './types';
 
 function deduplicateMessages(list: Message[]): Message[] {
   const seenIds = new Set<string>();
@@ -51,8 +54,68 @@ function deduplicateMessages(list: Message[]): Message[] {
   return result;
 }
 
+/**
+ * Synthesizes a loud, high-gain harmonic chime bell using the Web Audio API.
+ */
+function playLoudNotificationChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+
+    const compressor = ctx.createDynamicsCompressor();
+    compressor.threshold.setValueAtTime(-20, ctx.currentTime);
+    compressor.knee.setValueAtTime(25, ctx.currentTime);
+    compressor.ratio.setValueAtTime(10, ctx.currentTime);
+    compressor.attack.setValueAtTime(0.003, ctx.currentTime);
+    compressor.release.setValueAtTime(0.25, ctx.currentTime);
+
+    const masterGain = ctx.createGain();
+    masterGain.gain.setValueAtTime(0.9, ctx.currentTime);
+    masterGain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.2);
+
+    // Harmonic bell triad: E5 (659.25Hz), A5 (880Hz), C#6 (1108.73Hz), E6 (1318.51Hz)
+    const notes = [
+      { freq: 659.25, delay: 0.0 },
+      { freq: 880.0, delay: 0.08 },
+      { freq: 1108.73, delay: 0.16 },
+      { freq: 1318.51, delay: 0.24 },
+    ];
+
+    notes.forEach(({ freq, delay }) => {
+      const osc = ctx.createOscillator();
+      const oscGain = ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + delay);
+
+      oscGain.gain.setValueAtTime(0.45, ctx.currentTime + delay);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.85);
+
+      osc.connect(oscGain);
+      oscGain.connect(compressor);
+
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + 0.9);
+    });
+
+    compressor.connect(masterGain);
+    masterGain.connect(ctx.destination);
+  } catch (err) {
+    console.warn('[Audio] Notification playback issue:', err);
+  }
+}
+
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'inbox' | 'rules' | 'settings'>('inbox');
+  const [pages, setPages] = useState<PageData[]>([]);
+  const [selectedPageId, setSelectedPageId] = useState<string>('all');
+  const [isAddPageModalOpen, setIsAddPageModalOpen] = useState(false);
+
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -70,11 +133,12 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  const showBrowserNotification = (senderName: string, text: string) => {
+  const showBrowserNotification = (senderName: string, text: string, pageName?: string) => {
     try {
       if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification(`💬 ${senderName}`, {
-          body: text || 'New message received',
+        const title = pageName ? `💬 ${senderName} (${pageName})` : `💬 ${senderName}`;
+        new Notification(title, {
+          body: text || 'New message/attachment received',
           icon: '/favicon.ico',
           silent: false,
         });
@@ -84,39 +148,25 @@ export const App: React.FC = () => {
     }
   };
 
-  const playNotificationChime = () => {
-    try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(587.33, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12);
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.35);
-    } catch {
-      // Ignore if user has not interacted with browser yet
-    }
-  };
-
   // 1. Initial Data Fetching
+  const loadPages = useCallback(async () => {
+    try {
+      const pageList = await fetchPages();
+      setPages(pageList);
+    } catch (err) {
+      console.error('Failed to load pages:', err);
+    }
+  }, []);
+
   const loadConversations = useCallback(async () => {
     try {
-      const list = await fetchConversations();
+      const list = await fetchConversations(searchQuery || undefined, selectedPageId);
       setConversations(list);
       setSelectedConversationId((prev) => prev || (list.length > 0 ? list[0].id : null));
     } catch (err) {
       console.error('Failed to load conversations:', err);
     }
-  }, []);
+  }, [searchQuery, selectedPageId]);
 
   const loadRules = useCallback(async () => {
     try {
@@ -137,19 +187,27 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    loadConversations();
+    loadPages();
     loadRules();
     loadSettings();
+  }, [loadPages, loadRules, loadSettings]);
+
+  useEffect(() => {
+    loadConversations();
 
     // Auto-refresh interval (3s) for bulletproof real-time sync
     const interval = setInterval(() => {
       loadConversations();
+      loadPages();
       if (selectedConversationId) {
         fetchConversationMessages(selectedConversationId)
           .then((data) => {
             setMessages((prev) => {
               const deduped = deduplicateMessages(data.messages);
-              if (prev.length !== deduped.length || (deduped.length > 0 && prev[prev.length - 1]?.id !== deduped[deduped.length - 1]?.id)) {
+              if (
+                prev.length !== deduped.length ||
+                (deduped.length > 0 && prev[prev.length - 1]?.id !== deduped[deduped.length - 1]?.id)
+              ) {
                 return deduped;
               }
               return prev;
@@ -160,7 +218,7 @@ export const App: React.FC = () => {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [loadConversations, loadRules, loadSettings, selectedConversationId]);
+  }, [loadConversations, loadPages, selectedConversationId]);
 
   // 2. Fetch Messages when selected conversation changes
   useEffect(() => {
@@ -203,8 +261,12 @@ export const App: React.FC = () => {
       onNewMessage: ({ message, conversation }) => {
         // Sound & Browser Notification for inbound messages
         if (message.direction === 'inbound') {
-          playNotificationChime();
-          showBrowserNotification(conversation.userName || 'Customer', message.text);
+          playLoudNotificationChime();
+          showBrowserNotification(
+            conversation.userName || 'Customer',
+            message.text,
+            conversation.page?.name
+          );
         }
 
         // Update or insert conversation in list
@@ -230,6 +292,8 @@ export const App: React.FC = () => {
           }
           return currentId;
         });
+
+        loadPages();
       },
 
       onNewReply: ({ message, conversationId }) => {
@@ -262,6 +326,7 @@ export const App: React.FC = () => {
         setSyncStatus(status);
         if (!status.inProgress) {
           loadConversations();
+          loadPages();
         }
       },
     });
@@ -271,12 +336,12 @@ export const App: React.FC = () => {
       socket.off('disconnect', handleDisconnect);
       unsubscribe();
     };
-  }, [loadConversations]);
+  }, [loadConversations, loadPages]);
 
   // Handlers
-  const handleSendReply = async (text: string) => {
+  const handleSendReply = async (text?: string, mediaFile?: File) => {
     if (!selectedConversationId) return;
-    const result = await sendReply(selectedConversationId, text);
+    const result = await sendReply(selectedConversationId, text, mediaFile);
     setMessages((prev) => deduplicateMessages([...prev, result.message]));
   };
 
@@ -294,6 +359,7 @@ export const App: React.FC = () => {
     setConversations((prev) =>
       prev.map((c) => (c.id === result.conversation.id ? { ...c, ...result.conversation } : c))
     );
+    loadPages();
   };
 
   const handleCreateRule = async (newRule: any) => {
@@ -331,10 +397,24 @@ export const App: React.FC = () => {
   const handleTriggerSync = async () => {
     setSyncStatus({ inProgress: true, message: 'Starting Facebook sync...' });
     try {
-      await triggerSync();
+      await triggerSync(selectedPageId !== 'all' ? selectedPageId : undefined);
       await loadConversations();
+      await loadPages();
     } catch (err: any) {
       setSyncStatus({ inProgress: false, message: `Sync error: ${err.message || err}` });
+    }
+  };
+
+  const handleDeletePage = async (pageDbId: string) => {
+    try {
+      await deletePage(pageDbId);
+      await loadPages();
+      if (selectedPageId === pageDbId) {
+        setSelectedPageId('all');
+      }
+      await loadConversations();
+    } catch (err: any) {
+      alert(`Failed to remove page: ${err.message || err}`);
     }
   };
 
@@ -349,6 +429,10 @@ export const App: React.FC = () => {
         socketConnected={socketConnected}
         facebookStatus={settings?.facebookStatus}
         syncStatus={syncStatus}
+        pages={pages}
+        selectedPageId={selectedPageId}
+        onSelectPage={(pageId) => setSelectedPageId(pageId)}
+        onOpenAddModal={() => setIsAddPageModalOpen(true)}
         onTriggerSync={handleTriggerSync}
       />
 
@@ -387,12 +471,26 @@ export const App: React.FC = () => {
           <SettingsPanel
             settings={settings}
             syncStatus={syncStatus}
+            pages={pages}
             onUpdateGlobalAutoReply={handleUpdateGlobalAutoReply}
             onVerifyConnection={handleVerifyFacebook}
             onTriggerSync={handleTriggerSync}
+            onOpenAddModal={() => setIsAddPageModalOpen(true)}
+            onDeletePage={handleDeletePage}
+            onPlayLoudNotification={playLoudNotificationChime}
           />
         )}
       </div>
+
+      <AddPageModal
+        isOpen={isAddPageModalOpen}
+        onClose={() => setIsAddPageModalOpen(false)}
+        onPageAdded={async (newPage) => {
+          await loadPages();
+          setSelectedPageId(newPage.id);
+          await loadConversations();
+        }}
+      />
     </div>
   );
 };

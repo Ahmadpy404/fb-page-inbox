@@ -225,7 +225,8 @@ describe('Webhook API Integration Tests', () => {
 
       expect(graphApiClient.sendMessage).toHaveBeenCalledWith(
         'PSID_TEST_USER_100',
-        'Our support team is available 24/7!'
+        'Our support team is available 24/7!',
+        undefined
       );
 
       // Verify outbound_auto message stored in DB

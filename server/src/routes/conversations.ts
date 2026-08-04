@@ -1,4 +1,7 @@
 import { Router, Request, Response } from 'express';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 import { prisma } from '../db';
 import {
   sendManualReply,
@@ -9,15 +12,46 @@ import {
 
 const router = Router();
 
+// Ensure uploads folder exists
+const uploadsDir = path.resolve(__dirname, '../../uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Setup Multer for media uploads (images and videos up to 25MB)
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const uniqueName = `media-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+    cb(null, uniqueName);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 25 * 1024 * 1024, // 25MB max
+  },
+});
+
 /**
  * GET /api/conversations
- * List conversations sorted by last_message_at with last message preview.
+ * List conversations optionally filtered by pageId or search query
  */
 router.get('/', async (req: Request, res: Response) => {
   try {
     const search = req.query.search as string | undefined;
+    const pageId = req.query.pageId as string | undefined;
 
     const where: any = {};
+
+    if (pageId && pageId !== 'all') {
+      where.pageId = pageId;
+    }
+
     if (search) {
       where.OR = [
         { userName: { contains: search } },
@@ -30,6 +64,9 @@ router.get('/', async (req: Request, res: Response) => {
       where,
       orderBy: { lastMessageAt: 'desc' },
       include: {
+        page: {
+          select: { id: true, name: true, pageId: true },
+        },
         messages: {
           orderBy: { createdAt: 'desc' },
           take: 1,
@@ -45,6 +82,8 @@ router.get('/', async (req: Request, res: Response) => {
       lastMessageAt: conv.lastMessageAt,
       autoReplyEnabled: conv.autoReplyEnabled,
       unread: conv.unread,
+      pageId: conv.pageId,
+      page: conv.page,
       createdAt: conv.createdAt,
       lastMessage: conv.messages[0] || null,
     }));
@@ -66,6 +105,7 @@ router.get('/:id/messages', async (req: Request, res: Response) => {
 
     const conversation = await prisma.conversation.findUnique({
       where: { id },
+      include: { page: true },
     });
 
     if (!conversation) {
@@ -86,18 +126,31 @@ router.get('/:id/messages', async (req: Request, res: Response) => {
 
 /**
  * POST /api/conversations/:id/reply
- * Send manual reply to a conversation.
+ * Send manual reply to a conversation (supports text and/or photo/video upload).
  */
-router.post('/:id/reply', async (req: Request, res: Response) => {
+router.post('/:id/reply', upload.single('media'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { text } = req.body;
+    const text = req.body.text as string | undefined;
+    const file = req.file;
 
-    if (!text || typeof text !== 'string' || !text.trim()) {
-      return res.status(400).json({ error: 'Message text is required' });
+    if (!text && !file) {
+      return res.status(400).json({ error: 'Message text or media file is required' });
     }
 
-    const result = await sendManualReply(id, text);
+    let mediaFile: { buffer: Buffer; originalname: string; mimetype: string; localUrl: string } | undefined;
+
+    if (file) {
+      const fileBuffer = fs.readFileSync(file.path);
+      mediaFile = {
+        buffer: fileBuffer,
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        localUrl: `/uploads/${file.filename}`,
+      };
+    }
+
+    const result = await sendManualReply(id, text, mediaFile);
     return res.status(201).json(result);
   } catch (err: any) {
     console.error('[API] Error sending manual reply:', err);
@@ -143,7 +196,8 @@ router.post('/:id/read', async (req: Request, res: Response) => {
  */
 router.post('/sync', async (req: Request, res: Response) => {
   try {
-    const result = await backfillFromGraphApi();
+    const pageId = req.body?.pageId as string | undefined;
+    const result = await backfillFromGraphApi(pageId);
     return res.json({ success: true, ...result });
   } catch (err: any) {
     console.error('[API] Error syncing conversations:', err);

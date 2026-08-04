@@ -1,6 +1,7 @@
 import React from 'react';
-import { MessageSquare, Bot, Settings as SettingsIcon, RefreshCw, Radio } from 'lucide-react';
-import { FacebookStatus, SyncStatus } from '../types';
+import { MessageSquare, Bot, Settings as SettingsIcon, RefreshCw } from 'lucide-react';
+import { FacebookStatus, SyncStatus, PageData } from '../types';
+import { PageSelector } from './Pages/PageSelector';
 
 interface NavbarProps {
   activeTab: 'inbox' | 'rules' | 'settings';
@@ -8,6 +9,10 @@ interface NavbarProps {
   socketConnected: boolean;
   facebookStatus?: FacebookStatus;
   syncStatus?: SyncStatus;
+  pages: PageData[];
+  selectedPageId: string;
+  onSelectPage: (pageId: string) => void;
+  onOpenAddModal: () => void;
   onTriggerSync: () => void;
 }
 
@@ -15,8 +20,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   setActiveTab,
   socketConnected,
-  facebookStatus,
   syncStatus,
+  pages,
+  selectedPageId,
+  onSelectPage,
+  onOpenAddModal,
   onTriggerSync,
 }) => {
   return (
@@ -28,10 +36,20 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="brand-title-group">
           <h1>
             FB Page Unified Inbox
-            <span style={{ fontSize: '11px', color: '#818cf8', fontWeight: 600 }}>v1.0</span>
+            <span style={{ fontSize: '11px', color: '#818cf8', fontWeight: 600 }}>v2.0 PRO</span>
           </h1>
-          <div className="brand-subtitle">Official Meta Graph API</div>
+          <div className="brand-subtitle">Multi-Page & Real-Time Messenger</div>
         </div>
+      </div>
+
+      {/* Multi-Page Selector Dropdown */}
+      <div className="nav-page-selector-wrapper">
+        <PageSelector
+          pages={pages}
+          selectedPageId={selectedPageId}
+          onSelectPage={onSelectPage}
+          onOpenAddModal={onOpenAddModal}
+        />
       </div>
 
       <div className="nav-tabs">
@@ -57,7 +75,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           id="nav-tab-settings"
         >
           <SettingsIcon size={16} />
-          Settings
+          Settings & Pages
         </button>
       </div>
 
@@ -66,23 +84,6 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className={`status-dot ${socketConnected ? 'online' : 'offline'}`} />
           <span>{socketConnected ? 'Live' : 'Connecting...'}</span>
         </div>
-
-        {facebookStatus && (
-          <div
-            className="status-pill"
-            style={{
-              borderColor: facebookStatus.connected ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)',
-            }}
-          >
-            <Radio
-              size={12}
-              color={facebookStatus.connected ? '#10b981' : '#ef4444'}
-            />
-            <span style={{ color: facebookStatus.connected ? '#34d399' : '#f87171' }}>
-              {facebookStatus.connected ? (facebookStatus.pageName || 'FB Connected') : 'FB Disconnected'}
-            </span>
-          </div>
-        )}
 
         <button
           className="sync-btn"

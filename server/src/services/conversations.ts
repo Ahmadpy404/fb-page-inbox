@@ -13,10 +13,25 @@ import {
  * Find or create a Conversation row for a PSID.
  * Fetches user profile in background if name is missing.
  */
-export async function getOrCreateConversation(psid: string, initialName?: string) {
+export async function getOrCreateConversation(
+  psid: string,
+  initialName?: string,
+  fbPageId?: string
+) {
   let conversation = await prisma.conversation.findUnique({
     where: { psid },
   });
+
+  // Resolve internal page ID
+  let internalPageId: string | undefined;
+  if (fbPageId) {
+    const page = await prisma.page.findUnique({ where: { pageId: fbPageId } });
+    if (page) internalPageId = page.id;
+  }
+  if (!internalPageId) {
+    const defaultPage = await prisma.page.findFirst({ where: { isActive: true } });
+    if (defaultPage) internalPageId = defaultPage.id;
+  }
 
   if (!conversation) {
     let userName = initialName;
@@ -43,14 +58,24 @@ export async function getOrCreateConversation(psid: string, initialName?: string
         lastMessageAt: new Date(),
         unread: true,
         autoReplyEnabled: true,
+        pageId: internalPageId,
       },
     });
-  } else if (initialName && (!conversation.userName || conversation.userName.startsWith('User '))) {
-    // If existing conversation has a generic name, upgrade it with the real name
-    conversation = await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { userName: initialName },
-    });
+  } else {
+    // If existing conversation needs page association or name upgrade
+    const updates: any = {};
+    if (initialName && (!conversation.userName || conversation.userName.startsWith('User '))) {
+      updates.userName = initialName;
+    }
+    if (!conversation.pageId && internalPageId) {
+      updates.pageId = internalPageId;
+    }
+    if (Object.keys(updates).length > 0) {
+      conversation = await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: updates,
+      });
+    }
   }
 
   return conversation;
@@ -60,7 +85,7 @@ export async function getOrCreateConversation(psid: string, initialName?: string
  * Ingest an incoming webhook event (inbound message or outbound echo).
  */
 export async function ingestWebhookEvent(event: ParsedWebhookEvent) {
-  const { userPsid, text, isEcho, fbMessageId, timestamp, attachments } = event;
+  const { pageId: fbPageId, userPsid, text, isEcho, fbMessageId, timestamp, attachments } = event;
 
   // 1. Check for deduplication if fbMessageId exists
   if (fbMessageId) {
@@ -73,13 +98,24 @@ export async function ingestWebhookEvent(event: ParsedWebhookEvent) {
     }
   }
 
-  // 2. Get or create conversation
-  const conversation = await getOrCreateConversation(userPsid);
+  // 2. Get or create conversation linked to this page
+  const conversation = await getOrCreateConversation(userPsid, undefined, fbPageId);
 
-  // Format message content
+  // Format message content & attachments
   let messageText = text;
-  if (!messageText && attachments && attachments.length > 0) {
-    messageText = `[${attachments[0].type.toUpperCase()}]`;
+  let attachmentsJson: string | null = null;
+
+  if (attachments && attachments.length > 0) {
+    if (!messageText) {
+      messageText = `[${attachments[0].type?.toUpperCase() || 'ATTACHMENT'}]`;
+    }
+    attachmentsJson = JSON.stringify(
+      attachments.map((att) => ({
+        type: att.type || 'file',
+        url: att.payload?.url || '',
+        title: att.payload?.title,
+      }))
+    );
   }
 
   // 3. For outbound echoes: deduplicate against messages recently sent from this app (within last 30 seconds)
@@ -109,19 +145,19 @@ export async function ingestWebhookEvent(event: ParsedWebhookEvent) {
 
   const direction = isEcho ? 'outbound_manual' : 'inbound';
 
-  // 3. Create message row
+  // 4. Create message row
   const message = await prisma.message.create({
     data: {
       conversationId: conversation.id,
       direction,
       text: messageText || '',
-      attachments: attachments ? JSON.stringify(attachments) : null,
+      attachments: attachmentsJson,
       createdAt: timestamp || new Date(),
       fbMessageId: fbMessageId || undefined,
     },
   });
 
-  // 4. Update conversation lastMessageAt & unread state
+  // 5. Update conversation lastMessageAt & unread state
   const updatedConversation = await prisma.conversation.update({
     where: { id: conversation.id },
     data: {
@@ -130,16 +166,15 @@ export async function ingestWebhookEvent(event: ParsedWebhookEvent) {
     },
   });
 
-  // 5. Emit socket events
+  // 6. Emit socket events with page context
   emitNewMessage({
     message,
     conversation: updatedConversation,
   });
   emitConversationUpdated(updatedConversation);
 
-  // 6. If it's an inbound message, process auto-reply rules
+  // 7. If it's an inbound message, process auto-reply rules
   if (!isEcho && text) {
-    // Process auto-reply asynchronously so webhook response is not blocked
     setImmediate(async () => {
       try {
         await processAutoReply(conversation.id, userPsid, text);
@@ -153,36 +188,78 @@ export async function ingestWebhookEvent(event: ParsedWebhookEvent) {
 }
 
 /**
- * Send a manual reply to a conversation.
+ * Send a manual reply to a conversation, supporting text and/or photo/video media attachments.
  */
-export async function sendManualReply(conversationId: string, text: string) {
-  if (!text || !text.trim()) {
-    throw new Error('Message text cannot be empty');
+export async function sendManualReply(
+  conversationId: string,
+  text?: string,
+  mediaFile?: {
+    buffer: Buffer;
+    originalname: string;
+    mimetype: string;
+    localUrl: string;
+  }
+) {
+  if ((!text || !text.trim()) && !mediaFile) {
+    throw new Error('Message text or media file is required');
   }
 
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
+    include: { page: true },
   });
 
   if (!conversation) {
     throw new Error(`Conversation not found for id: ${conversationId}`);
   }
 
-  // Send via Meta Graph API
-  const sendResult = await graphApiClient.sendMessage(conversation.psid, text.trim());
+  const pageToken = conversation.page?.accessToken;
+  let sendResult: { recipient_id: string; message_id: string } | null = null;
+  let attachmentsJson: string | null = null;
 
-  // Save outbound_manual message in database
+  // 1. If media file is provided (Photo / Video)
+  if (mediaFile) {
+    const isVideo = mediaFile.mimetype.startsWith('video/');
+    const attachmentType = isVideo ? 'video' : 'image';
+
+    sendResult = await graphApiClient.sendMediaAttachment(
+      conversation.psid,
+      attachmentType,
+      mediaFile.buffer,
+      mediaFile.originalname,
+      mediaFile.mimetype,
+      pageToken
+    );
+
+    attachmentsJson = JSON.stringify([
+      {
+        type: attachmentType,
+        url: mediaFile.localUrl,
+        name: mediaFile.originalname,
+      },
+    ]);
+  }
+
+  // 2. If text message is also provided
+  if (text && text.trim()) {
+    sendResult = await graphApiClient.sendMessage(conversation.psid, text.trim(), pageToken);
+  }
+
+  const messageText = text ? text.trim() : (mediaFile?.mimetype.startsWith('video/') ? '[VIDEO]' : '[IMAGE]');
+
+  // 3. Save outbound_manual message in database
   const message = await prisma.message.create({
     data: {
       conversationId: conversation.id,
       direction: 'outbound_manual',
-      text: text.trim(),
-      fbMessageId: sendResult.message_id,
+      text: messageText,
+      attachments: attachmentsJson,
+      fbMessageId: sendResult?.message_id,
       createdAt: new Date(),
     },
   });
 
-  // Update conversation lastMessageAt and mark as read
+  // 4. Update conversation lastMessageAt and mark as read
   const updatedConversation = await prisma.conversation.update({
     where: { id: conversation.id },
     data: {
@@ -191,7 +268,7 @@ export async function sendManualReply(conversationId: string, text: string) {
     },
   });
 
-  // Emit realtime updates
+  // 5. Emit realtime updates
   emitNewReply({
     message,
     conversationId: conversation.id,
@@ -238,22 +315,30 @@ export async function markConversationRead(conversationId: string) {
 }
 
 /**
- * Backfill conversation history from Meta Graph API.
+ * Backfill conversation history from Meta Graph API for a specific or default page.
  */
-export async function backfillFromGraphApi(): Promise<{
+export async function backfillFromGraphApi(targetPageId?: string): Promise<{
   conversationsSynced: number;
   messagesSynced: number;
 }> {
   emitSyncStatus({ inProgress: true, message: 'Fetching conversations from Facebook...' });
 
   try {
-    let pageId = '';
-    try {
-      const page = await graphApiClient.getPageDetails();
-      pageId = page?.id || '';
-    } catch {}
+    let internalPage = targetPageId
+      ? await prisma.page.findUnique({ where: { id: targetPageId } })
+      : await prisma.page.findFirst({ where: { isActive: true } });
 
-    const fbConversations = await graphApiClient.fetchConversationsList(30, pageId);
+    let fbPageId = internalPage?.pageId || '';
+    let token = internalPage?.accessToken;
+
+    if (!fbPageId) {
+      try {
+        const page = await graphApiClient.getPageDetails();
+        fbPageId = page?.id || '';
+      } catch {}
+    }
+
+    const fbConversations = await graphApiClient.fetchConversationsList(30, fbPageId);
     let conversationsCount = 0;
     let messagesCount = 0;
 
@@ -269,7 +354,7 @@ export async function backfillFromGraphApi(): Promise<{
       // Fetch participants from details
       const details = await graphApiClient.fetchConversationDetails(fbConv.id);
       const participants = details?.participants?.data || [];
-      const customer = participants.find((p: any) => p.id !== pageId) || participants[0];
+      const customer = participants.find((p: any) => p.id !== fbPageId) || participants[0];
 
       // Fetch messages for this conversation
       const fbMessages = await graphApiClient.fetchConversationMessages(fbConv.id, 50);
@@ -277,10 +362,9 @@ export async function backfillFromGraphApi(): Promise<{
       let psid = customer?.id;
       let userName = customer?.name;
 
-      // If PSID wasn't in participants, infer from message sender/receiver
       if (!psid && fbMessages.length > 0) {
         for (const msg of fbMessages) {
-          if (msg.from?.id && msg.from.id !== pageId && msg.from.name) {
+          if (msg.from?.id && msg.from.id !== fbPageId && msg.from.name) {
             psid = msg.from.id;
             userName = msg.from.name;
             break;
@@ -293,15 +377,14 @@ export async function backfillFromGraphApi(): Promise<{
       }
 
       // Upsert conversation
-      const conversation = await getOrCreateConversation(psid, userName);
+      const conversation = await getOrCreateConversation(psid, userName, fbPageId);
       conversationsCount++;
 
       // Ingest messages
       for (const fbMsg of fbMessages) {
         if (!fbMsg.id) continue;
 
-        // Determine direction
-        const isFromPage = fbMsg.from?.id === pageId;
+        const isFromPage = fbMsg.from?.id === fbPageId;
         const direction = isFromPage ? 'outbound_manual' : 'inbound';
         const createdAt = fbMsg.created_time ? new Date(fbMsg.created_time) : new Date();
 
@@ -323,7 +406,6 @@ export async function backfillFromGraphApi(): Promise<{
         }
       }
 
-      // Update lastMessageAt to the latest message time
       if (fbConv.updated_time) {
         await prisma.conversation.update({
           where: { id: conversation.id },
