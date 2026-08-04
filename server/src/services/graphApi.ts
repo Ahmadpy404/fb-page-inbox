@@ -208,7 +208,7 @@ export class GraphApiClient {
   }
 
   /**
-   * Fetch conversation list using resilient multi-tier fallback strategies
+   * Fetch conversation list from Meta Graph API
    */
   async fetchConversationsList(limit: number = 25): Promise<any[]> {
     if (this.accessToken.startsWith('dev_') || this.accessToken.startsWith('test_')) {
@@ -216,10 +216,9 @@ export class GraphApiClient {
     }
 
     const strategies = [
-      `${this.baseUrl}/me/conversations?platform=messenger&fields=id,participants,updated_time&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`,
-      `${this.baseUrl}/me/conversations?fields=id,participants,updated_time&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`,
-      `${this.baseUrl}/me/conversations?fields=id,updated_time&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`,
       `${this.baseUrl}/me/conversations?limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`,
+      `${this.baseUrl}/me/conversations?fields=id,link,updated_time&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`,
+      `${this.baseUrl}/me/conversations?platform=messenger&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}`,
     ];
 
     let lastErrorMsg = 'Failed to fetch conversations';
@@ -242,6 +241,27 @@ export class GraphApiClient {
     }
 
     throw new Error(`Meta Graph API Error: ${lastErrorMsg}`);
+  }
+
+  /**
+   * Fetch participants and senders for a conversation
+   */
+  async fetchConversationDetails(conversationId: string): Promise<any> {
+    if (this.accessToken.startsWith('dev_') || this.accessToken.startsWith('test_')) {
+      return null;
+    }
+
+    try {
+      const url = `${this.baseUrl}/${encodeURIComponent(conversationId)}?fields=participants,senders&access_token=${encodeURIComponent(this.accessToken)}`;
+      const response = await this.fetchFn(url, { method: 'GET' });
+      const data = (await response.json()) as any;
+      if (response.ok && !data?.error) {
+        return data;
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   /**
