@@ -14,6 +14,14 @@ const configSchema = z.object({
   VERIFY_TOKEN: z.string().min(1, 'VERIFY_TOKEN is required (Webhook verification token)'),
   GRAPH_API_BASE_URL: z.string().url().default('https://graph.facebook.com/v19.0'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  ADMIN_USERNAME: z.string().default('admin'),
+  ADMIN_PASSWORD: z.string().optional(),
+  JWT_SECRET: z.string().optional(),
+  ADDITIONAL_PAGE_TOKENS: z.string().optional(),
+  PAGE_ACCESS_TOKEN_2: z.string().optional(),
+  PAGE_ACCESS_TOKEN_3: z.string().optional(),
+  PAGE_ACCESS_TOKEN_4: z.string().optional(),
+  PAGE_ACCESS_TOKEN_5: z.string().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

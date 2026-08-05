@@ -21,12 +21,12 @@ async function startServer() {
       console.log(`🔌 Socket.IO initialized`);
       console.log(`=================================================\n`);
 
-      // Attempt to subscribe Page to Webhook events via Meta Graph API
+      // Auto-bootstrap Facebook pages from environment variables
       try {
-        const { graphApiClient } = await import('./services/graphApi');
-        await graphApiClient.subscribePageToWebhook();
+        const { autoBootstrapPages } = await import('./services/bootstrap');
+        await autoBootstrapPages();
       } catch (err: any) {
-        console.warn('[Startup] Could not auto-subscribe page to webhooks:', err.message || err);
+        console.warn('[Startup] Page auto-bootstrap error:', err.message || err);
       }
     });
   } catch (err: any) {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { MessageSquare, Bot, Settings as SettingsIcon, RefreshCw } from 'lucide-react';
+import { MessageSquare, Bot, Settings as SettingsIcon, RefreshCw, LogOut, ShieldCheck } from 'lucide-react';
 import { FacebookStatus, SyncStatus, PageData } from '../types';
 import { PageSelector } from './Pages/PageSelector';
 
@@ -14,6 +14,8 @@ interface NavbarProps {
   onSelectPage: (pageId: string) => void;
   onOpenAddModal: () => void;
   onTriggerSync: () => void;
+  adminUser?: { username: string; role?: string } | null;
+  onLogout: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -26,6 +28,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectPage,
   onOpenAddModal,
   onTriggerSync,
+  adminUser,
+  onLogout,
 }) => {
   return (
     <nav className="navbar">
@@ -89,13 +93,29 @@ export const Navbar: React.FC<NavbarProps> = ({
           className="sync-btn"
           onClick={onTriggerSync}
           disabled={syncStatus?.inProgress}
-          title="Backfill conversation history from Meta Graph API"
+          title="Backfill all conversation history from Meta Graph API"
           id="btn-sync-history"
         >
           <RefreshCw size={14} className={syncStatus?.inProgress ? 'spin-icon' : ''} />
           <span>{syncStatus?.inProgress ? 'Syncing...' : 'Sync History'}</span>
         </button>
+
+        {adminUser && (
+          <div className="admin-profile-pill" title={`Logged in as ${adminUser.username}`}>
+            <ShieldCheck size={14} className="admin-icon" />
+            <span className="admin-name">{adminUser.username}</span>
+            <button
+              className="logout-icon-btn"
+              onClick={onLogout}
+              title="Logout from Dashboard"
+              id="btn-logout"
+            >
+              <LogOut size={13} />
+            </button>
+          </div>
+        )}
       </div>
     </nav>
   );
 };
+

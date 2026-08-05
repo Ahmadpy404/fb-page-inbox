@@ -22,6 +22,7 @@ export interface PageData {
   id: string;
   pageId: string;
   name: string;
+  accessToken?: string;
   pictureUrl?: string | null;
   isActive: boolean;
   totalConversations?: number;

@@ -308,68 +308,86 @@ export class GraphApiClient {
   }
 
   /**
-   * Fetch conversation list from Meta Graph API
+   * Fetch ALL conversations from Meta Graph API using recursive cursor pagination.
+   * Continues through data.paging.next until all chats are retrieved (up to maxConversations).
    */
-  async fetchConversationsList(limit: number = 25, pageId?: string): Promise<any[]> {
-    if (this.accessToken.startsWith('dev_') || this.accessToken.startsWith('test_')) {
+  async fetchAllConversations(
+    pageId?: string,
+    customToken?: string,
+    maxConversations: number = 2000
+  ): Promise<any[]> {
+    const token = customToken || this.accessToken;
+    if (token.startsWith('dev_') || token.startsWith('test_')) {
       return [];
     }
 
-    const token = encodeURIComponent(this.accessToken);
     const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
+    const target = pageId && pageId !== 'me' ? pageId : 'me';
+    let currentUrl: string | null = `${this.baseUrl}/${target}/conversations?fields=id,snippet,updated_time,link&limit=50&access_token=${encodeURIComponent(token)}${proof}`;
 
-    const targets = ['me'];
-    if (pageId && pageId !== 'me') {
-      targets.unshift(pageId);
-    }
+    const allConversations: any[] = [];
+    const seenIds = new Set<string>();
+    let pageCount = 0;
 
-    const strategies: string[] = [];
-    for (const target of targets) {
-      strategies.push(
-        `${this.baseUrl}/${target}/conversations?limit=${limit}&access_token=${token}`,
-        `${this.baseUrl}/${target}/conversations?limit=${limit}&access_token=${token}${proof}`,
-        `${this.baseUrl}/${target}/conversations?fields=id,snippet,updated_time&limit=${limit}&access_token=${token}`,
-        `${this.baseUrl}/${target}/conversations?fields=id,link,updated_time&limit=${limit}&access_token=${token}`,
-        `${this.baseUrl}/${target}/conversations?platform=messenger&limit=${limit}&access_token=${token}`
-      );
-    }
-
-    let lastErrorMsg = 'Failed to fetch conversations';
-
-    for (const url of strategies) {
+    while (currentUrl && allConversations.length < maxConversations && pageCount < 40) {
+      pageCount++;
       try {
-        const response = await this.fetchFn(url, {
+        const response = await this.fetchFn(currentUrl, {
           method: 'GET',
           headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
         });
-        const data = (await response.json()) as any;
 
-        if (response.ok && !data?.error && Array.isArray(data.data)) {
-          return data.data;
+        const data = (await response.json()) as any;
+        if (!response.ok || data?.error) {
+          console.warn('[GraphApi] Pagination error:', data?.error?.message || response.statusText);
+          break;
         }
 
-        if (data?.error?.message) {
-          lastErrorMsg = data.error.message;
+        if (Array.isArray(data.data) && data.data.length > 0) {
+          for (const item of data.data) {
+            if (item.id && !seenIds.has(item.id)) {
+              seenIds.add(item.id);
+              allConversations.push(item);
+            }
+          }
+        } else {
+          break;
+        }
+
+        // Check next page URL
+        if (data.paging && data.paging.next && allConversations.length < maxConversations) {
+          currentUrl = data.paging.next;
+        } else {
+          currentUrl = null;
         }
       } catch (err: any) {
-        lastErrorMsg = err.message || lastErrorMsg;
+        console.warn('[GraphApi] Network error during pagination:', err.message || err);
+        break;
       }
     }
 
-    throw new Error(`Meta Graph API Error: ${lastErrorMsg}`);
+    return allConversations;
+  }
+
+  /**
+   * Fetch conversation list (single page or fallback)
+   */
+  async fetchConversationsList(limit: number = 50, pageId?: string, customToken?: string): Promise<any[]> {
+    return this.fetchAllConversations(pageId, customToken, limit);
   }
 
   /**
    * Fetch participants and senders for a conversation
    */
-  async fetchConversationDetails(conversationId: string): Promise<any> {
-    if (this.accessToken.startsWith('dev_') || this.accessToken.startsWith('test_')) {
+  async fetchConversationDetails(conversationId: string, customToken?: string): Promise<any> {
+    const token = customToken || this.accessToken;
+    if (token.startsWith('dev_') || token.startsWith('test_')) {
       return null;
     }
 
     const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
     try {
-      const url = `${this.baseUrl}/${encodeURIComponent(conversationId)}?fields=participants,senders&access_token=${encodeURIComponent(this.accessToken)}${proof}`;
+      const url = `${this.baseUrl}/${encodeURIComponent(conversationId)}?fields=participants,senders&access_token=${encodeURIComponent(token)}${proof}`;
       const response = await this.fetchFn(url, {
         method: 'GET',
         headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
@@ -385,40 +403,71 @@ export class GraphApiClient {
   }
 
   /**
-   * Fetch messages for a specific conversation ID
+   * Fetch ALL messages for a specific conversation ID using cursor pagination.
    */
-  async fetchConversationMessages(conversationId: string, limit: number = 25): Promise<any[]> {
-    if (this.accessToken.startsWith('dev_') || this.accessToken.startsWith('test_')) {
+  async fetchAllConversationMessages(
+    conversationId: string,
+    customToken?: string,
+    maxMessages: number = 200
+  ): Promise<any[]> {
+    const token = customToken || this.accessToken;
+    if (token.startsWith('dev_') || token.startsWith('test_')) {
       return [];
     }
 
     const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
-    const urls = [
-      `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?fields=id,message,from,to,created_time&limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}${proof}`,
-      `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?limit=${limit}&access_token=${encodeURIComponent(this.accessToken)}${proof}`,
-    ];
+    let currentUrl: string | null = `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?fields=id,message,from,to,created_time,attachments{mime_type,name,size,image_data,video_data,file_url}&limit=50&access_token=${encodeURIComponent(token)}${proof}`;
 
-    for (const url of urls) {
+    const allMessages: any[] = [];
+    const seenIds = new Set<string>();
+    let pageCount = 0;
+
+    while (currentUrl && allMessages.length < maxMessages && pageCount < 10) {
+      pageCount++;
       try {
-        const response = await this.fetchFn(url, {
+        const response = await this.fetchFn(currentUrl, {
           method: 'GET',
           headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
         });
         const data = (await response.json()) as any;
 
-        if (response.ok && !data?.error && Array.isArray(data.data)) {
-          return data.data;
+        if (!response.ok || data?.error) break;
+
+        if (Array.isArray(data.data) && data.data.length > 0) {
+          for (const msg of data.data) {
+            if (msg.id && !seenIds.has(msg.id)) {
+              seenIds.add(msg.id);
+              allMessages.push(msg);
+            }
+          }
+        } else {
+          break;
         }
-      } catch {}
+
+        if (data.paging && data.paging.next && allMessages.length < maxMessages) {
+          currentUrl = data.paging.next;
+        } else {
+          currentUrl = null;
+        }
+      } catch {
+        break;
+      }
     }
 
-    return [];
+    return allMessages;
+  }
+
+  /**
+   * Fetch messages for a specific conversation ID (single page limit)
+   */
+  async fetchConversationMessages(conversationId: string, limit: number = 50, customToken?: string): Promise<any[]> {
+    return this.fetchAllConversationMessages(conversationId, customToken, limit);
   }
 
   /**
    * Legacy method for backward compatibility
    */
-  async fetchConversations(limit: number = 25): Promise<GraphApiConversation[]> {
+  async fetchConversations(limit: number = 50): Promise<GraphApiConversation[]> {
     return this.fetchConversationsList(limit);
   }
 

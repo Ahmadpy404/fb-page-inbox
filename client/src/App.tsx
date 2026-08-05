@@ -5,6 +5,7 @@ import { ChatWindow } from './components/Inbox/ChatWindow';
 import { RulesManager } from './components/Rules/RulesManager';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { AddPageModal } from './components/Pages/AddPageModal';
+import { LoginModal } from './components/Auth/LoginModal';
 import {
   fetchConversations,
   fetchConversationMessages,
@@ -22,9 +23,14 @@ import {
   triggerSync,
   fetchPages,
   deletePage,
+  verifySession,
+  logout,
+  syncPagesVault,
 } from './services/api';
-import { getSocket, subscribeToRealtimeEvents } from './services/socket';
+import { getSocket, subscribeToRealtimeEvents, refreshSocketAuth } from './services/socket';
 import { Conversation, Message, Rule, SettingsData, SyncStatus, PageData } from './types';
+
+const VAULT_KEY = 'fb_inbox_pages_vault';
 
 function deduplicateMessages(list: Message[]): Message[] {
   const seenIds = new Set<string>();
@@ -111,6 +117,11 @@ function playLoudNotificationChime() {
 }
 
 export const App: React.FC = () => {
+  // Auth state
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
+  const [adminUser, setAdminUser] = useState<{ username: string; role?: string } | null>(null);
+
   const [activeTab, setActiveTab] = useState<'inbox' | 'rules' | 'settings'>('inbox');
   const [pages, setPages] = useState<PageData[]>([]);
   const [selectedPageId, setSelectedPageId] = useState<string>('all');
@@ -125,6 +136,38 @@ export const App: React.FC = () => {
   const [syncStatus, setSyncStatus] = useState<SyncStatus | undefined>();
   const [socketConnected, setSocketConnected] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [hasAutoSynced, setHasAutoSynced] = useState(false);
+
+  // Check auth session on boot
+  useEffect(() => {
+    async function checkAuth() {
+      try {
+        const session = await verifySession();
+        if (session.authenticated && session.user) {
+          setIsAuthenticated(true);
+          setAdminUser(session.user);
+          refreshSocketAuth();
+        } else {
+          setIsAuthenticated(false);
+          setAdminUser(null);
+        }
+      } catch {
+        setIsAuthenticated(false);
+      } finally {
+        setIsAuthChecking(false);
+      }
+    }
+
+    checkAuth();
+
+    const handleUnauthorized = () => {
+      setIsAuthenticated(false);
+      setAdminUser(null);
+    };
+
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
+  }, []);
 
   // Request browser notification permissions on mount
   useEffect(() => {
@@ -143,57 +186,105 @@ export const App: React.FC = () => {
           silent: false,
         });
       }
-    } catch {
-      // Ignore if not permitted
-    }
+    } catch {}
   };
 
-  // 1. Initial Data Fetching
-  const loadPages = useCallback(async () => {
+  // Reconcile and save persistent pages vault
+  const syncAndSaveVault = useCallback(async (serverPages: PageData[]) => {
     try {
-      const pageList = await fetchPages();
-      setPages(pageList);
+      const storedVault = localStorage.getItem(VAULT_KEY);
+      let vaultList: Array<{ pageId: string; name?: string; token: string }> = [];
+
+      if (storedVault) {
+        try {
+          vaultList = JSON.parse(storedVault);
+        } catch {}
+      }
+
+      // Check if server is missing any pages from vault (e.g. after fresh Render restart)
+      const serverPageIds = new Set(serverPages.map((p) => p.pageId));
+      const missingPages = vaultList.filter((vp) => !serverPageIds.has(vp.pageId) && vp.token);
+
+      if (missingPages.length > 0) {
+        await syncPagesVault(missingPages);
+        const refreshed = await fetchPages();
+        setPages(refreshed);
+      }
+
+      // Update vault with current server pages, preserving tokens if known
+      const tokenMap = new Map(vaultList.map((v) => [v.pageId, v.token]));
+      const updatedVault = serverPages.map((p) => ({
+        pageId: p.pageId,
+        name: p.name,
+        token: p.accessToken || tokenMap.get(p.pageId) || '',
+      })).filter((p) => p.token);
+
+      localStorage.setItem(VAULT_KEY, JSON.stringify(updatedVault));
     } catch (err) {
-      console.error('Failed to load pages:', err);
+      console.warn('[Vault] Sync error:', err);
     }
   }, []);
 
+  // 1. Initial Data Fetching (Protected by Auth)
+  const loadPages = useCallback(async () => {
+    if (!isAuthenticated) return;
+    try {
+      const pageList = await fetchPages();
+      setPages(pageList);
+      syncAndSaveVault(pageList);
+    } catch (err) {
+      console.error('Failed to load pages:', err);
+    }
+  }, [isAuthenticated, syncAndSaveVault]);
+
   const loadConversations = useCallback(async () => {
+    if (!isAuthenticated) return;
     try {
       const list = await fetchConversations(searchQuery || undefined, selectedPageId);
       setConversations(list);
       setSelectedConversationId((prev) => prev || (list.length > 0 ? list[0].id : null));
+
+      // Auto-trigger background sync if zero conversations found on first load
+      if (!hasAutoSynced && list.length === 0) {
+        setHasAutoSynced(true);
+        triggerSync(selectedPageId !== 'all' ? selectedPageId : undefined).catch(() => {});
+      }
     } catch (err) {
       console.error('Failed to load conversations:', err);
     }
-  }, [searchQuery, selectedPageId]);
+  }, [isAuthenticated, searchQuery, selectedPageId, hasAutoSynced]);
 
   const loadRules = useCallback(async () => {
+    if (!isAuthenticated) return;
     try {
       const list = await fetchRules();
       setRules(list);
     } catch (err) {
       console.error('Failed to load rules:', err);
     }
-  }, []);
+  }, [isAuthenticated]);
 
   const loadSettings = useCallback(async () => {
+    if (!isAuthenticated) return;
     try {
       const data = await fetchSettings();
       setSettings(data);
     } catch (err) {
       console.error('Failed to load settings:', err);
     }
-  }, []);
+  }, [isAuthenticated]);
 
   useEffect(() => {
-    loadPages();
-    loadRules();
-    loadSettings();
-  }, [loadPages, loadRules, loadSettings]);
+    if (isAuthenticated) {
+      loadPages();
+      loadRules();
+      loadSettings();
+      loadConversations();
+    }
+  }, [isAuthenticated, loadPages, loadRules, loadSettings, loadConversations]);
 
   useEffect(() => {
-    loadConversations();
+    if (!isAuthenticated) return;
 
     // Auto-refresh interval (3s) for bulletproof real-time sync
     const interval = setInterval(() => {
@@ -218,11 +309,11 @@ export const App: React.FC = () => {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [loadConversations, loadPages, selectedConversationId]);
+  }, [isAuthenticated, loadConversations, loadPages, selectedConversationId]);
 
   // 2. Fetch Messages when selected conversation changes
   useEffect(() => {
-    if (!selectedConversationId) {
+    if (!isAuthenticated || !selectedConversationId) {
       setMessages([]);
       return;
     }
@@ -244,10 +335,12 @@ export const App: React.FC = () => {
     return () => {
       isCurrent = false;
     };
-  }, [selectedConversationId]);
+  }, [isAuthenticated, selectedConversationId]);
 
   // 3. Setup Socket.IO Realtime Listeners
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     const socket = getSocket();
 
     const handleConnect = () => setSocketConnected(true);
@@ -336,9 +429,22 @@ export const App: React.FC = () => {
       socket.off('disconnect', handleDisconnect);
       unsubscribe();
     };
-  }, [loadConversations, loadPages]);
+  }, [isAuthenticated, loadConversations, loadPages]);
 
   // Handlers
+  const handleLoginSuccess = (user: any) => {
+    setIsAuthenticated(true);
+    setAdminUser(user);
+  };
+
+  const handleLogout = async () => {
+    if (window.confirm('Are you sure you want to log out of the Facebook Page Unified Inbox?')) {
+      await logout();
+      setIsAuthenticated(false);
+      setAdminUser(null);
+    }
+  };
+
   const handleSendReply = async (text?: string, mediaFile?: File) => {
     if (!selectedConversationId) return;
     const result = await sendReply(selectedConversationId, text, mediaFile);
@@ -395,7 +501,7 @@ export const App: React.FC = () => {
   };
 
   const handleTriggerSync = async () => {
-    setSyncStatus({ inProgress: true, message: 'Starting Facebook sync...' });
+    setSyncStatus({ inProgress: true, message: 'Starting deep Facebook sync...' });
     try {
       await triggerSync(selectedPageId !== 'all' ? selectedPageId : undefined);
       await loadConversations();
@@ -418,6 +524,20 @@ export const App: React.FC = () => {
     }
   };
 
+  if (isAuthChecking) {
+    return (
+      <div className="auth-splash-screen">
+        <div className="spinner-glow" />
+        <h2>Facebook Page Unified Inbox</h2>
+        <p>Securing connection...</p>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginModal onLoginSuccess={handleLoginSuccess} />;
+  }
+
   const selectedConversation =
     conversations.find((c) => c.id === selectedConversationId) || null;
 
@@ -434,6 +554,8 @@ export const App: React.FC = () => {
         onSelectPage={(pageId) => setSelectedPageId(pageId)}
         onOpenAddModal={() => setIsAddPageModalOpen(true)}
         onTriggerSync={handleTriggerSync}
+        adminUser={adminUser}
+        onLogout={handleLogout}
       />
 
       <div className="main-content">

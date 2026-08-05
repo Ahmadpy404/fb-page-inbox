@@ -321,7 +321,7 @@ export async function backfillFromGraphApi(targetPageId?: string): Promise<{
   conversationsSynced: number;
   messagesSynced: number;
 }> {
-  emitSyncStatus({ inProgress: true, message: 'Fetching conversations from Facebook...' });
+  emitSyncStatus({ inProgress: true, message: 'Fetching all conversations from Facebook Graph API...' });
 
   try {
     let internalPage = targetPageId
@@ -338,85 +338,125 @@ export async function backfillFromGraphApi(targetPageId?: string): Promise<{
       } catch {}
     }
 
-    const fbConversations = await graphApiClient.fetchConversationsList(30, fbPageId);
+    // Fetch ALL conversations (recursive cursor pagination)
+    const fbConversations = await graphApiClient.fetchAllConversations(fbPageId, token, 3000);
     let conversationsCount = 0;
     let messagesCount = 0;
+    const total = fbConversations.length;
 
-    for (let i = 0; i < fbConversations.length; i++) {
-      const fbConv = fbConversations[i];
-      emitSyncStatus({
-        inProgress: true,
-        total: fbConversations.length,
-        synced: i + 1,
-        message: `Syncing conversation ${i + 1} of ${fbConversations.length}...`,
-      });
+    emitSyncStatus({
+      inProgress: true,
+      total,
+      synced: 0,
+      message: `Discovered ${total} conversation(s). Starting deep sync...`,
+    });
 
-      // Fetch participants from details
-      const details = await graphApiClient.fetchConversationDetails(fbConv.id);
-      const participants = details?.participants?.data || [];
-      const customer = participants.find((p: any) => p.id !== fbPageId) || participants[0];
+    // Process in concurrent batches of 6 for high performance
+    const BATCH_SIZE = 6;
+    for (let i = 0; i < fbConversations.length; i += BATCH_SIZE) {
+      const chunk = fbConversations.slice(i, i + BATCH_SIZE);
 
-      // Fetch messages for this conversation
-      const fbMessages = await graphApiClient.fetchConversationMessages(fbConv.id, 50);
+      await Promise.all(
+        chunk.map(async (fbConv, chunkIdx) => {
+          const currentIndex = i + chunkIdx + 1;
+          try {
+            // Fetch participants and senders
+            const details = await graphApiClient.fetchConversationDetails(fbConv.id, token);
+            const participants = details?.participants?.data || [];
+            const customer = participants.find((p: any) => p.id !== fbPageId) || participants[0];
 
-      let psid = customer?.id;
-      let userName = customer?.name;
+            // Fetch all messages for this conversation thread
+            const fbMessages = await graphApiClient.fetchAllConversationMessages(fbConv.id, token, 300);
 
-      if (!psid && fbMessages.length > 0) {
-        for (const msg of fbMessages) {
-          if (msg.from?.id && msg.from.id !== fbPageId && msg.from.name) {
-            psid = msg.from.id;
-            userName = msg.from.name;
-            break;
+            let psid = customer?.id;
+            let userName = customer?.name;
+
+            if (!psid && fbMessages.length > 0) {
+              for (const msg of fbMessages) {
+                if (msg.from?.id && msg.from.id !== fbPageId && msg.from.name) {
+                  psid = msg.from.id;
+                  userName = msg.from.name;
+                  break;
+                }
+              }
+            }
+
+            if (!psid) {
+              psid = fbConv.id;
+            }
+
+            // Upsert conversation
+            const conversation = await getOrCreateConversation(psid, userName, fbPageId);
+            conversationsCount++;
+
+            // Ingest messages
+            for (const fbMsg of fbMessages) {
+              if (!fbMsg.id) continue;
+
+              const isFromPage = fbMsg.from?.id === fbPageId;
+              const direction = isFromPage ? 'outbound_manual' : 'inbound';
+              const createdAt = fbMsg.created_time ? new Date(fbMsg.created_time) : new Date();
+
+              const existing = await prisma.message.findUnique({
+                where: { fbMessageId: fbMsg.id },
+              });
+
+              if (!existing) {
+                // Extract attachment if available
+                let attachmentsJson: string | undefined;
+                if (fbMsg.attachments && Array.isArray(fbMsg.attachments.data) && fbMsg.attachments.data.length > 0) {
+                  const attList = fbMsg.attachments.data
+                    .map((att: any) => ({
+                      type: att.video_data ? 'video' : (att.image_data ? 'image' : 'file'),
+                      url: att.image_data?.url || att.video_data?.url || att.file_url,
+                      name: att.name,
+                    }))
+                    .filter((a: any) => a.url);
+
+                  if (attList.length > 0) {
+                    attachmentsJson = JSON.stringify(attList);
+                  }
+                }
+
+                await prisma.message.create({
+                  data: {
+                    conversationId: conversation.id,
+                    direction,
+                    text: fbMsg.message || '',
+                    attachments: attachmentsJson,
+                    createdAt,
+                    fbMessageId: fbMsg.id,
+                  },
+                });
+                messagesCount++;
+              }
+            }
+
+            if (fbConv.updated_time) {
+              await prisma.conversation.update({
+                where: { id: conversation.id },
+                data: { lastMessageAt: new Date(fbConv.updated_time) },
+              });
+            }
+          } catch (itemErr: any) {
+            console.warn(`[Conversations] Failed to sync conversation ${fbConv.id}:`, itemErr.message);
+          } finally {
+            emitSyncStatus({
+              inProgress: true,
+              total,
+              synced: Math.min(currentIndex, total),
+              message: `Syncing conversations (${Math.min(currentIndex, total)}/${total})...`,
+            });
           }
-        }
-      }
-
-      if (!psid) {
-        psid = fbConv.id;
-      }
-
-      // Upsert conversation
-      const conversation = await getOrCreateConversation(psid, userName, fbPageId);
-      conversationsCount++;
-
-      // Ingest messages
-      for (const fbMsg of fbMessages) {
-        if (!fbMsg.id) continue;
-
-        const isFromPage = fbMsg.from?.id === fbPageId;
-        const direction = isFromPage ? 'outbound_manual' : 'inbound';
-        const createdAt = fbMsg.created_time ? new Date(fbMsg.created_time) : new Date();
-
-        const existing = await prisma.message.findUnique({
-          where: { fbMessageId: fbMsg.id },
-        });
-
-        if (!existing) {
-          await prisma.message.create({
-            data: {
-              conversationId: conversation.id,
-              direction,
-              text: fbMsg.message || '',
-              createdAt,
-              fbMessageId: fbMsg.id,
-            },
-          });
-          messagesCount++;
-        }
-      }
-
-      if (fbConv.updated_time) {
-        await prisma.conversation.update({
-          where: { id: conversation.id },
-          data: { lastMessageAt: new Date(fbConv.updated_time) },
-        });
-      }
+        })
+      );
     }
 
     emitSyncStatus({
       inProgress: false,
-      message: `Sync complete! Synced ${conversationsCount} conversations and ${messagesCount} messages.`,
+      total,
+      synced: total,
+      message: `Sync complete! Synced ${conversationsCount} conversation(s) and ${messagesCount} message(s).`,
     });
 
     return { conversationsSynced: conversationsCount, messagesSynced: messagesCount };

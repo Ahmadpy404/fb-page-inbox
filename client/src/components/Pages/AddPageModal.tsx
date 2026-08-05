@@ -30,6 +30,18 @@ export const AddPageModal: React.FC<AddPageModalProps> = ({ isOpen, onClose, onP
     try {
       const res = await addPage(token.trim(), name.trim() || undefined);
       if (res.success && res.page) {
+        try {
+          const VAULT_KEY = 'fb_inbox_pages_vault';
+          const existingVault = JSON.parse(localStorage.getItem(VAULT_KEY) || '[]');
+          const filtered = existingVault.filter((v: any) => v.pageId !== res.page.pageId);
+          filtered.push({
+            pageId: res.page.pageId,
+            name: res.page.name,
+            token: token.trim(),
+          });
+          localStorage.setItem(VAULT_KEY, JSON.stringify(filtered));
+        } catch {}
+
         onPageAdded(res.page);
         onClose();
         setToken('');

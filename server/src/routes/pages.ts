@@ -163,15 +163,65 @@ router.patch('/:id', async (req: Request, res: Response) => {
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const count = await prisma.page.count();
-    if (count <= 1) {
-      return res.status(400).json({ error: 'Cannot delete the only remaining page' });
-    }
-
     await prisma.page.delete({ where: { id } });
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ error: 'Failed to delete page' });
+  }
+});
+
+/**
+ * POST /api/pages/sync-vault
+ * Reconcile client-side stored pages with backend database.
+ * If backend database was reset (e.g. Render restart), this seamlessly re-creates them.
+ */
+router.post('/sync-vault', async (req: Request, res: Response) => {
+  try {
+    const { pages } = req.body;
+    if (!Array.isArray(pages) || pages.length === 0) {
+      return res.json({ success: true, count: 0 });
+    }
+
+    let restoredCount = 0;
+    for (const item of pages) {
+      if (!item.token || !item.pageId) continue;
+
+      const existing = await prisma.page.findUnique({
+        where: { pageId: item.pageId },
+      });
+
+      if (!existing) {
+        let finalToken = item.token;
+        let pageName = item.name;
+        let pictureUrl: string | undefined;
+
+        try {
+          const detailsUrl = `https://graph.facebook.com/v19.0/me?fields=id,name,picture&access_token=${encodeURIComponent(finalToken)}`;
+          const detailsRes = await fetch(detailsUrl);
+          const details = (await detailsRes.json()) as any;
+          if (details && details.id) {
+            pageName = pageName || details.name;
+            pictureUrl = details.picture?.data?.url;
+          }
+        } catch {}
+
+        await prisma.page.create({
+          data: {
+            pageId: item.pageId,
+            name: pageName || 'Facebook Page',
+            accessToken: finalToken,
+            pictureUrl,
+            isActive: true,
+          },
+        });
+        restoredCount++;
+      }
+    }
+
+    return res.json({ success: true, restoredCount });
+  } catch (err: any) {
+    console.warn('[Pages] Vault sync error:', err.message);
+    return res.status(500).json({ error: 'Failed to sync vault' });
   }
 });
 

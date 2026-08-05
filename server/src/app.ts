@@ -7,6 +7,8 @@ import conversationsRoutes from './routes/conversations';
 import rulesRoutes from './routes/rules';
 import settingsRoutes from './routes/settings';
 import pagesRoutes from './routes/pages';
+import authRoutes from './routes/auth';
+import { requireAuth } from './middleware/auth';
 
 // Custom request interface with rawBody buffer
 export interface AppRequest extends Request {
@@ -50,12 +52,15 @@ export function createApp(): express.Application {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // Mount API & Webhook routers
+  // Mount Public Webhooks & Auth routes
   app.use('/webhook', webhookRoutes);
-  app.use('/api/conversations', conversationsRoutes);
-  app.use('/api/rules', rulesRoutes);
-  app.use('/api/settings', settingsRoutes);
-  app.use('/api/pages', pagesRoutes);
+  app.use('/api/auth', authRoutes);
+
+  // Mount Protected API routers
+  app.use('/api/conversations', requireAuth, conversationsRoutes);
+  app.use('/api/rules', requireAuth, rulesRoutes);
+  app.use('/api/settings', requireAuth, settingsRoutes);
+  app.use('/api/pages', requireAuth, pagesRoutes);
 
   // Serve static client assets if built in production
   const clientDistPath = path.resolve(__dirname, '../../client/dist');

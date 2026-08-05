@@ -1,6 +1,8 @@
 import { io, Socket } from 'socket.io-client';
 import { Message, Conversation, SyncStatus } from '../types';
 
+import { getAuthToken } from './api';
+
 let socket: Socket | null = null;
 
 export function getSocket(): Socket {
@@ -9,6 +11,9 @@ export function getSocket(): Socket {
     socket = io(serverUrl, {
       transports: ['websocket', 'polling'],
       autoConnect: true,
+      auth: {
+        token: getAuthToken(),
+      },
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
     });
@@ -27,6 +32,15 @@ export function getSocket(): Socket {
   }
 
   return socket;
+}
+
+export function refreshSocketAuth(): void {
+  if (socket) {
+    (socket.auth as any) = { token: getAuthToken() };
+    if (socket.connected) {
+      socket.disconnect().connect();
+    }
+  }
 }
 
 export function subscribeToRealtimeEvents(handlers: {
