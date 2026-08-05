@@ -315,155 +315,222 @@ export async function markConversationRead(conversationId: string) {
 }
 
 /**
- * Backfill conversation history from Meta Graph API for a specific or default page.
+ * Backfill conversation history from Meta Graph API for a specific or all active pages.
  */
 export async function backfillFromGraphApi(targetPageId?: string): Promise<{
   conversationsSynced: number;
   messagesSynced: number;
 }> {
-  emitSyncStatus({ inProgress: true, message: 'Fetching all conversations from Facebook Graph API...' });
+  emitSyncStatus({ inProgress: true, message: 'Initiating Facebook Graph API synchronization...' });
 
   try {
-    let internalPage = targetPageId
-      ? await prisma.page.findUnique({ where: { id: targetPageId } })
-      : await prisma.page.findFirst({ where: { isActive: true } });
+    let pagesToSync: Array<{ id: string; pageId: string; name: string; accessToken: string }> = [];
 
-    let fbPageId = internalPage?.pageId || '';
-    let token = internalPage?.accessToken;
-
-    if (!fbPageId) {
-      try {
-        const page = await graphApiClient.getPageDetails();
-        fbPageId = page?.id || '';
-      } catch {}
+    if (targetPageId && targetPageId !== 'all') {
+      const page = await prisma.page.findFirst({
+        where: {
+          OR: [{ id: targetPageId }, { pageId: targetPageId }],
+        },
+      });
+      if (page && page.accessToken) {
+        pagesToSync.push(page);
+      }
+    } else {
+      const activePages = await prisma.page.findMany({
+        where: { isActive: true },
+      });
+      pagesToSync = activePages.filter((p) => p.accessToken && p.accessToken.length > 0);
     }
 
-    // Fetch ALL conversations (recursive cursor pagination)
-    const fbConversations = await graphApiClient.fetchAllConversations(fbPageId, token, 3000);
-    let conversationsCount = 0;
-    let messagesCount = 0;
-    const total = fbConversations.length;
+    // Fallback: If no pages in DB yet, try to discover default page from config PAGE_ACCESS_TOKEN
+    if (pagesToSync.length === 0) {
+      try {
+        const details = await graphApiClient.getPageDetails();
+        if (details && details.id) {
+          const configToken = graphApiClient['accessToken'];
+          if (configToken && !configToken.startsWith('dev_') && !configToken.startsWith('test_')) {
+            const page = await prisma.page.upsert({
+              where: { pageId: details.id },
+              update: { name: details.name, accessToken: configToken, isActive: true },
+              create: { pageId: details.id, name: details.name, accessToken: configToken, isActive: true },
+            });
+            pagesToSync.push(page);
+          }
+        }
+      } catch (err: any) {
+        console.warn('[Conversations] Could not discover default page from config:', err.message);
+      }
+    }
 
-    emitSyncStatus({
-      inProgress: true,
-      total,
-      synced: 0,
-      message: `Discovered ${total} conversation(s). Starting deep sync...`,
-    });
+    if (pagesToSync.length === 0) {
+      const msg = 'No active Facebook Pages configured. Please add a Facebook Page to sync.';
+      emitSyncStatus({ inProgress: false, total: 0, synced: 0, message: msg });
+      return { conversationsSynced: 0, messagesSynced: 0 };
+    }
 
-    // Process in concurrent batches of 6 for high performance
-    const BATCH_SIZE = 6;
-    for (let i = 0; i < fbConversations.length; i += BATCH_SIZE) {
-      const chunk = fbConversations.slice(i, i + BATCH_SIZE);
+    let totalConversationsCount = 0;
+    let totalMessagesCount = 0;
 
-      await Promise.all(
-        chunk.map(async (fbConv, chunkIdx) => {
-          const currentIndex = i + chunkIdx + 1;
-          try {
-            // Fetch participants and senders
-            const details = await graphApiClient.fetchConversationDetails(fbConv.id, token);
-            const participants = details?.participants?.data || [];
-            const customer = participants.find((p: any) => p.id !== fbPageId) || participants[0];
+    for (const page of pagesToSync) {
+      emitSyncStatus({
+        inProgress: true,
+        message: `Fetching conversation list from Meta for page: ${page.name}...`,
+      });
 
-            // Fetch all messages for this conversation thread
-            const fbMessages = await graphApiClient.fetchAllConversationMessages(fbConv.id, token, 300);
+      // Fetch ALL conversations (recursive cursor pagination)
+      const fbConversations = await graphApiClient.fetchAllConversations(
+        page.pageId,
+        page.accessToken,
+        3000
+      );
 
-            let psid = customer?.id;
-            let userName = customer?.name;
+      const total = fbConversations.length;
+      console.log(`[Conversations] Page "${page.name}" has ${total} conversation(s) on Meta.`);
 
-            if (!psid && fbMessages.length > 0) {
-              for (const msg of fbMessages) {
-                if (msg.from?.id && msg.from.id !== fbPageId && msg.from.name) {
-                  psid = msg.from.id;
-                  userName = msg.from.name;
-                  break;
-                }
+      if (total === 0) {
+        continue;
+      }
+
+      emitSyncStatus({
+        inProgress: true,
+        total,
+        synced: 0,
+        message: `Syncing ${total} conversation(s) for "${page.name}"...`,
+      });
+
+      // Process in parallel chunks of 6
+      const BATCH_SIZE = 6;
+      for (let i = 0; i < fbConversations.length; i += BATCH_SIZE) {
+        const chunk = fbConversations.slice(i, i + BATCH_SIZE);
+
+        await Promise.all(
+          chunk.map(async (fbConv, chunkIdx) => {
+            const currentIndex = i + chunkIdx + 1;
+            try {
+              // 1. Resolve participants
+              let participants = fbConv.participants?.data || [];
+              if (participants.length === 0) {
+                const details = await graphApiClient.fetchConversationDetails(fbConv.id, page.accessToken);
+                participants = details?.participants?.data || [];
               }
-            }
 
-            if (!psid) {
-              psid = fbConv.id;
-            }
+              // Customer is the participant whose ID is NOT the Facebook Page ID
+              const customer =
+                participants.find((p: any) => p.id !== page.pageId) || participants[0];
 
-            // Upsert conversation
-            const conversation = await getOrCreateConversation(psid, userName, fbPageId);
-            conversationsCount++;
+              // 2. Resolve messages
+              let fbMessages = fbConv.messages?.data || [];
+              if (fbMessages.length === 0) {
+                fbMessages = await graphApiClient.fetchAllConversationMessages(
+                  fbConv.id,
+                  page.accessToken,
+                  300
+                );
+              }
 
-            // Ingest messages
-            for (const fbMsg of fbMessages) {
-              if (!fbMsg.id) continue;
+              let psid = customer?.id;
+              let userName = customer?.name;
 
-              const isFromPage = fbMsg.from?.id === fbPageId;
-              const direction = isFromPage ? 'outbound_manual' : 'inbound';
-              const createdAt = fbMsg.created_time ? new Date(fbMsg.created_time) : new Date();
-
-              const existing = await prisma.message.findUnique({
-                where: { fbMessageId: fbMsg.id },
-              });
-
-              if (!existing) {
-                // Extract attachment if available
-                let attachmentsJson: string | undefined;
-                if (fbMsg.attachments && Array.isArray(fbMsg.attachments.data) && fbMsg.attachments.data.length > 0) {
-                  const attList = fbMsg.attachments.data
-                    .map((att: any) => ({
-                      type: att.video_data ? 'video' : (att.image_data ? 'image' : 'file'),
-                      url: att.image_data?.url || att.video_data?.url || att.file_url,
-                      name: att.name,
-                    }))
-                    .filter((a: any) => a.url);
-
-                  if (attList.length > 0) {
-                    attachmentsJson = JSON.stringify(attList);
+              if (!psid && fbMessages.length > 0) {
+                for (const msg of fbMessages) {
+                  if (msg.from?.id && msg.from.id !== page.pageId && msg.from.name) {
+                    psid = msg.from.id;
+                    userName = msg.from.name;
+                    break;
                   }
                 }
-
-                await prisma.message.create({
-                  data: {
-                    conversationId: conversation.id,
-                    direction,
-                    text: fbMsg.message || '',
-                    attachments: attachmentsJson,
-                    createdAt,
-                    fbMessageId: fbMsg.id,
-                  },
-                });
-                messagesCount++;
               }
-            }
 
-            if (fbConv.updated_time) {
-              await prisma.conversation.update({
-                where: { id: conversation.id },
-                data: { lastMessageAt: new Date(fbConv.updated_time) },
+              if (!psid) {
+                psid = fbConv.id;
+              }
+
+              // 3. Upsert conversation
+              const conversation = await getOrCreateConversation(psid, userName, page.pageId);
+              totalConversationsCount++;
+
+              // 4. Ingest messages
+              for (const fbMsg of fbMessages) {
+                if (!fbMsg.id) continue;
+
+                const isFromPage = fbMsg.from?.id === page.pageId;
+                const direction = isFromPage ? 'outbound_manual' : 'inbound';
+                const createdAt = fbMsg.created_time ? new Date(fbMsg.created_time) : new Date();
+
+                const existing = await prisma.message.findUnique({
+                  where: { fbMessageId: fbMsg.id },
+                });
+
+                if (!existing) {
+                  let attachmentsJson: string | undefined;
+                  if (
+                    fbMsg.attachments &&
+                    Array.isArray(fbMsg.attachments.data) &&
+                    fbMsg.attachments.data.length > 0
+                  ) {
+                    const attList = fbMsg.attachments.data
+                      .map((att: any) => ({
+                        type: att.video_data ? 'video' : att.image_data ? 'image' : 'file',
+                        url: att.image_data?.url || att.video_data?.url || att.file_url,
+                        name: att.name,
+                      }))
+                      .filter((a: any) => a.url);
+
+                    if (attList.length > 0) {
+                      attachmentsJson = JSON.stringify(attList);
+                    }
+                  }
+
+                  await prisma.message.create({
+                    data: {
+                      conversationId: conversation.id,
+                      direction,
+                      text: fbMsg.message || '',
+                      attachments: attachmentsJson,
+                      createdAt,
+                      fbMessageId: fbMsg.id,
+                    },
+                  });
+                  totalMessagesCount++;
+                }
+              }
+
+              if (fbConv.updated_time) {
+                await prisma.conversation.update({
+                  where: { id: conversation.id },
+                  data: { lastMessageAt: new Date(fbConv.updated_time) },
+                });
+              }
+            } catch (itemErr: any) {
+              console.warn(`[Conversations] Failed to sync thread ${fbConv.id}:`, itemErr.message);
+            } finally {
+              emitSyncStatus({
+                inProgress: true,
+                total,
+                synced: Math.min(currentIndex, total),
+                message: `Syncing ${page.name} (${Math.min(currentIndex, total)}/${total})...`,
               });
             }
-          } catch (itemErr: any) {
-            console.warn(`[Conversations] Failed to sync conversation ${fbConv.id}:`, itemErr.message);
-          } finally {
-            emitSyncStatus({
-              inProgress: true,
-              total,
-              synced: Math.min(currentIndex, total),
-              message: `Syncing conversations (${Math.min(currentIndex, total)}/${total})...`,
-            });
-          }
-        })
-      );
+          })
+        );
+      }
     }
 
     emitSyncStatus({
       inProgress: false,
-      total,
-      synced: total,
-      message: `Sync complete! Synced ${conversationsCount} conversation(s) and ${messagesCount} message(s).`,
+      total: totalConversationsCount,
+      synced: totalConversationsCount,
+      message: `Sync complete! Synced ${totalConversationsCount} conversation(s) and ${totalMessagesCount} message(s).`,
     });
 
-    return { conversationsSynced: conversationsCount, messagesSynced: messagesCount };
+    return {
+      conversationsSynced: totalConversationsCount,
+      messagesSynced: totalMessagesCount,
+    };
   } catch (err: any) {
     emitSyncStatus({
       inProgress: false,
-      message: `Sync failed: ${err.message || err}`,
+      message: `Sync error: ${err.message || err}`,
     });
     throw err;
   }

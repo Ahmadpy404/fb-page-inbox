@@ -213,11 +213,13 @@ export const App: React.FC = () => {
 
       // Update vault with current server pages, preserving tokens if known
       const tokenMap = new Map(vaultList.map((v) => [v.pageId, v.token]));
-      const updatedVault = serverPages.map((p) => ({
-        pageId: p.pageId,
-        name: p.name,
-        token: p.accessToken || tokenMap.get(p.pageId) || '',
-      })).filter((p) => p.token);
+      const updatedVault = serverPages
+        .map((p) => ({
+          pageId: p.pageId,
+          name: p.name,
+          token: p.accessToken || tokenMap.get(p.pageId) || '',
+        }))
+        .filter((p) => p.token);
 
       localStorage.setItem(VAULT_KEY, JSON.stringify(updatedVault));
     } catch (err) {
@@ -225,7 +227,6 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // 1. Initial Data Fetching (Protected by Auth)
   const loadPages = useCallback(async () => {
     if (!isAuthenticated) return;
     try {
@@ -243,16 +244,10 @@ export const App: React.FC = () => {
       const list = await fetchConversations(searchQuery || undefined, selectedPageId);
       setConversations(list);
       setSelectedConversationId((prev) => prev || (list.length > 0 ? list[0].id : null));
-
-      // Auto-trigger background sync if zero conversations found on first load
-      if (!hasAutoSynced && list.length === 0) {
-        setHasAutoSynced(true);
-        triggerSync(selectedPageId !== 'all' ? selectedPageId : undefined).catch(() => {});
-      }
     } catch (err) {
       console.error('Failed to load conversations:', err);
     }
-  }, [isAuthenticated, searchQuery, selectedPageId, hasAutoSynced]);
+  }, [isAuthenticated, searchQuery, selectedPageId]);
 
   const loadRules = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -274,14 +269,84 @@ export const App: React.FC = () => {
     }
   }, [isAuthenticated]);
 
+  // Load rules & settings when switching tabs
   useEffect(() => {
-    if (isAuthenticated) {
-      loadPages();
-      loadRules();
-      loadSettings();
-      loadConversations();
+    if (!isAuthenticated) return;
+    if (activeTab === 'rules') loadRules();
+    if (activeTab === 'settings') loadSettings();
+  }, [isAuthenticated, activeTab, loadRules, loadSettings]);
+
+  // Master Boot & Auto-Sync Initializer
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let isMounted = true;
+
+    async function initializeAndAutoSync() {
+      try {
+        // Step 1: Reconcile vault from localStorage with backend
+        const storedVault = localStorage.getItem(VAULT_KEY);
+        let vaultList: Array<{ pageId: string; name?: string; token: string }> = [];
+        if (storedVault) {
+          try {
+            vaultList = JSON.parse(storedVault);
+          } catch {}
+        }
+
+        if (vaultList.length > 0) {
+          try {
+            await syncPagesVault(vaultList);
+          } catch (err) {
+            console.warn('[Vault] sync error on boot:', err);
+          }
+        }
+
+        const currentPages = await fetchPages();
+
+        if (!isMounted) return;
+        setPages(currentPages);
+
+        // Step 2: Parallel fetch initial data
+        const [rulesList, settingsData, convList] = await Promise.all([
+          fetchRules().catch(() => []),
+          fetchSettings().catch(() => null),
+          fetchConversations(undefined, selectedPageId).catch(() => []),
+        ]);
+
+        if (!isMounted) return;
+        setRules(rulesList);
+        if (settingsData) setSettings(settingsData);
+        setConversations(convList);
+        if (convList.length > 0) {
+          setSelectedConversationId((prev) => prev || convList[0].id);
+        }
+
+        // Step 3: Trigger background automatic sync if not completed in this session
+        if (!hasAutoSynced) {
+          setHasAutoSynced(true);
+          console.log('[AutoSync] Running automated initial sync for inbox history...');
+          triggerSync(selectedPageId !== 'all' ? selectedPageId : undefined)
+            .then(async () => {
+              if (!isMounted) return;
+              const refreshedChats = await fetchConversations(undefined, selectedPageId);
+              setConversations(refreshedChats);
+              if (refreshedChats.length > 0) {
+                setSelectedConversationId((prev) => prev || refreshedChats[0].id);
+              }
+            })
+            .catch((err) => console.warn('[AutoSync] Notice:', err.message || err));
+        }
+      } catch (err) {
+        console.error('[Initializer] Error during startup:', err);
+      }
     }
-  }, [isAuthenticated, loadPages, loadRules, loadSettings, loadConversations]);
+
+    initializeAndAutoSync();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated, selectedPageId, hasAutoSynced]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -610,7 +675,13 @@ export const App: React.FC = () => {
         onPageAdded={async (newPage) => {
           await loadPages();
           setSelectedPageId(newPage.id);
-          await loadConversations();
+          triggerSync(newPage.id)
+            .then(async () => {
+              const chats = await fetchConversations(undefined, newPage.id);
+              setConversations(chats);
+              if (chats.length > 0) setSelectedConversationId(chats[0].id);
+            })
+            .catch(() => {});
         }}
       />
     </div>

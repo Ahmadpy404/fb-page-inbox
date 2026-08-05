@@ -83,12 +83,12 @@ export class GraphApiClient {
     return (getConfig().PAGE_ACCESS_TOKEN || '').trim();
   }
 
-  private get appSecretProof(): string | undefined {
+  getAppSecretProof(token?: string): string | undefined {
     try {
       const secret = (getConfig().APP_SECRET || '').trim();
-      const token = this.accessToken;
-      if (secret && token && !token.startsWith('dev_') && !token.startsWith('test_')) {
-        return crypto.createHmac('sha256', secret).update(token).digest('hex');
+      const t = (token || this.accessToken || '').trim();
+      if (secret && t && !t.startsWith('dev_') && !t.startsWith('test_')) {
+        return crypto.createHmac('sha256', secret).update(t).digest('hex');
       }
     } catch {}
     return undefined;
@@ -314,59 +314,81 @@ export class GraphApiClient {
   async fetchAllConversations(
     pageId?: string,
     customToken?: string,
-    maxConversations: number = 2000
+    maxConversations: number = 3000
   ): Promise<any[]> {
-    const token = customToken || this.accessToken;
-    if (token.startsWith('dev_') || token.startsWith('test_')) {
+    const token = (customToken || this.accessToken || '').trim();
+    if (!token || token.startsWith('dev_') || token.startsWith('test_')) {
       return [];
     }
 
-    const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
-    const target = pageId && pageId !== 'me' ? pageId : 'me';
-    let currentUrl: string | null = `${this.baseUrl}/${target}/conversations?fields=id,snippet,updated_time,link&limit=50&access_token=${encodeURIComponent(token)}${proof}`;
+    const proof = this.getAppSecretProof(token);
+    const proofParam = proof ? `&appsecret_proof=${proof}` : '';
 
-    const allConversations: any[] = [];
-    const seenIds = new Set<string>();
-    let pageCount = 0;
+    const fields = 'id,snippet,updated_time,link,participants,messages{id,message,from,to,created_time,attachments{mime_type,name,size,image_data,video_data,file_url}}';
+    const targets = pageId && pageId !== 'me' ? ['me', pageId] : ['me'];
 
-    while (currentUrl && allConversations.length < maxConversations && pageCount < 40) {
-      pageCount++;
-      try {
-        const response = await this.fetchFn(currentUrl, {
-          method: 'GET',
-          headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
-        });
+    for (const target of targets) {
+      // Try with proof first (if available), then without proof if signature mismatch occurs
+      const proofAttempts = proofParam ? [proofParam, ''] : [''];
 
-        const data = (await response.json()) as any;
-        if (!response.ok || data?.error) {
-          console.warn('[GraphApi] Pagination error:', data?.error?.message || response.statusText);
-          break;
-        }
+      for (const pOption of proofAttempts) {
+        let currentUrl: string | null = `${this.baseUrl}/${target}/conversations?fields=${encodeURIComponent(fields)}&limit=50&access_token=${encodeURIComponent(token)}${pOption}`;
+        const allConversations: any[] = [];
+        const seenIds = new Set<string>();
+        let pageCount = 0;
+        let hadError = false;
 
-        if (Array.isArray(data.data) && data.data.length > 0) {
-          for (const item of data.data) {
-            if (item.id && !seenIds.has(item.id)) {
-              seenIds.add(item.id);
-              allConversations.push(item);
+        while (currentUrl && allConversations.length < maxConversations && pageCount < 40) {
+          pageCount++;
+          try {
+            console.log(`[GraphApi] Fetching conversations page ${pageCount} for target=${target}...`);
+            const response = await this.fetchFn(currentUrl, {
+              method: 'GET',
+              headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
+            });
+
+            const data = (await response.json()) as any;
+            if (!response.ok || data?.error) {
+              console.warn(
+                `[GraphApi] Conversation fetch error for target=${target} (status ${response.status}):`,
+                data?.error?.message || response.statusText
+              );
+              hadError = true;
+              break;
             }
+
+            if (Array.isArray(data.data) && data.data.length > 0) {
+              for (const item of data.data) {
+                if (item.id && !seenIds.has(item.id)) {
+                  seenIds.add(item.id);
+                  allConversations.push(item);
+                }
+              }
+            } else {
+              break;
+            }
+
+            // Next cursor link
+            if (data.paging && data.paging.next && allConversations.length < maxConversations) {
+              currentUrl = data.paging.next;
+            } else {
+              currentUrl = null;
+            }
+          } catch (err: any) {
+            console.warn('[GraphApi] Network error fetching conversations:', err.message || err);
+            hadError = true;
+            break;
           }
-        } else {
-          break;
         }
 
-        // Check next page URL
-        if (data.paging && data.paging.next && allConversations.length < maxConversations) {
-          currentUrl = data.paging.next;
-        } else {
-          currentUrl = null;
+        if (!hadError || allConversations.length > 0) {
+          console.log(`[GraphApi] Successfully retrieved ${allConversations.length} conversation(s) from Meta Graph API.`);
+          return allConversations;
         }
-      } catch (err: any) {
-        console.warn('[GraphApi] Network error during pagination:', err.message || err);
-        break;
       }
     }
 
-    return allConversations;
+    return [];
   }
 
   /**
@@ -380,26 +402,31 @@ export class GraphApiClient {
    * Fetch participants and senders for a conversation
    */
   async fetchConversationDetails(conversationId: string, customToken?: string): Promise<any> {
-    const token = customToken || this.accessToken;
-    if (token.startsWith('dev_') || token.startsWith('test_')) {
+    const token = (customToken || this.accessToken || '').trim();
+    if (!token || token.startsWith('dev_') || token.startsWith('test_')) {
       return null;
     }
 
-    const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
-    try {
-      const url = `${this.baseUrl}/${encodeURIComponent(conversationId)}?fields=participants,senders&access_token=${encodeURIComponent(token)}${proof}`;
-      const response = await this.fetchFn(url, {
-        method: 'GET',
-        headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
-      });
-      const data = (await response.json()) as any;
-      if (response.ok && !data?.error) {
-        return data;
+    const proof = this.getAppSecretProof(token);
+    const proofParam = proof ? `&appsecret_proof=${proof}` : '';
+
+    const proofAttempts = proofParam ? [proofParam, ''] : [''];
+    for (const pOption of proofAttempts) {
+      try {
+        const url = `${this.baseUrl}/${encodeURIComponent(conversationId)}?fields=participants,senders&access_token=${encodeURIComponent(token)}${pOption}`;
+        const response = await this.fetchFn(url, {
+          method: 'GET',
+          headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
+        });
+        const data = (await response.json()) as any;
+        if (response.ok && !data?.error) {
+          return data;
+        }
+      } catch {
+        // continue
       }
-      return null;
-    } catch {
-      return null;
     }
+    return null;
   }
 
   /**
@@ -408,53 +435,67 @@ export class GraphApiClient {
   async fetchAllConversationMessages(
     conversationId: string,
     customToken?: string,
-    maxMessages: number = 200
+    maxMessages: number = 300
   ): Promise<any[]> {
-    const token = customToken || this.accessToken;
-    if (token.startsWith('dev_') || token.startsWith('test_')) {
+    const token = (customToken || this.accessToken || '').trim();
+    if (!token || token.startsWith('dev_') || token.startsWith('test_')) {
       return [];
     }
 
-    const proof = this.appSecretProof ? `&appsecret_proof=${this.appSecretProof}` : '';
-    let currentUrl: string | null = `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?fields=id,message,from,to,created_time,attachments{mime_type,name,size,image_data,video_data,file_url}&limit=50&access_token=${encodeURIComponent(token)}${proof}`;
+    const proof = this.getAppSecretProof(token);
+    const proofParam = proof ? `&appsecret_proof=${proof}` : '';
 
-    const allMessages: any[] = [];
-    const seenIds = new Set<string>();
-    let pageCount = 0;
+    const proofAttempts = proofParam ? [proofParam, ''] : [''];
+    for (const pOption of proofAttempts) {
+      let currentUrl: string | null = `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?fields=id,message,from,to,created_time,attachments{mime_type,name,size,image_data,video_data,file_url}&limit=50&access_token=${encodeURIComponent(token)}${pOption}`;
 
-    while (currentUrl && allMessages.length < maxMessages && pageCount < 10) {
-      pageCount++;
-      try {
-        const response = await this.fetchFn(currentUrl, {
-          method: 'GET',
-          headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
-        });
-        const data = (await response.json()) as any;
+      const allMessages: any[] = [];
+      const seenIds = new Set<string>();
+      let pageCount = 0;
+      let hadError = false;
 
-        if (!response.ok || data?.error) break;
+      while (currentUrl && allMessages.length < maxMessages && pageCount < 10) {
+        pageCount++;
+        try {
+          const response = await this.fetchFn(currentUrl, {
+            method: 'GET',
+            headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
+          });
+          const data = (await response.json()) as any;
 
-        if (Array.isArray(data.data) && data.data.length > 0) {
-          for (const msg of data.data) {
-            if (msg.id && !seenIds.has(msg.id)) {
-              seenIds.add(msg.id);
-              allMessages.push(msg);
-            }
+          if (!response.ok || data?.error) {
+            hadError = true;
+            break;
           }
-        } else {
+
+          if (Array.isArray(data.data) && data.data.length > 0) {
+            for (const msg of data.data) {
+              if (msg.id && !seenIds.has(msg.id)) {
+                seenIds.add(msg.id);
+                allMessages.push(msg);
+              }
+            }
+          } else {
+            break;
+          }
+
+          if (data.paging && data.paging.next && allMessages.length < maxMessages) {
+            currentUrl = data.paging.next;
+          } else {
+            currentUrl = null;
+          }
+        } catch {
+          hadError = true;
           break;
         }
+      }
 
-        if (data.paging && data.paging.next && allMessages.length < maxMessages) {
-          currentUrl = data.paging.next;
-        } else {
-          currentUrl = null;
-        }
-      } catch {
-        break;
+      if (!hadError || allMessages.length > 0) {
+        return allMessages;
       }
     }
 
-    return allMessages;
+    return [];
   }
 
   /**
