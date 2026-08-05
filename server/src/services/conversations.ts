@@ -157,21 +157,30 @@ export async function ingestWebhookEvent(event: ParsedWebhookEvent) {
     },
   });
 
-  // 5. Update conversation lastMessageAt & unread state
+  // 5. Update conversation lastMessageAt & unread state (including page data)
   const updatedConversation = await prisma.conversation.update({
     where: { id: conversation.id },
     data: {
       lastMessageAt: timestamp || new Date(),
       unread: !isEcho ? true : conversation.unread,
     },
+    include: {
+      page: true,
+    },
   });
 
-  // 6. Emit socket events with page context
+  // 6. Emit socket events with full page context
   emitNewMessage({
     message,
-    conversation: updatedConversation,
+    conversation: {
+      ...updatedConversation,
+      lastMessage: message,
+    },
   });
-  emitConversationUpdated(updatedConversation);
+  emitConversationUpdated({
+    ...updatedConversation,
+    lastMessage: message,
+  });
 
   // 7. If it's an inbound message, process auto-reply rules
   if (!isEcho && text) {

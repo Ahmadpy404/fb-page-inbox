@@ -61,7 +61,7 @@ function deduplicateMessages(list: Message[]): Message[] {
 }
 
 /**
- * Synthesizes a loud, high-gain harmonic chime bell using the Web Audio API.
+ * J.A.R.V.I.S. Mark-85 High-Resonance Futuristic Notification Sound FX
  */
 function playLoudNotificationChime() {
   try {
@@ -74,45 +74,68 @@ function playLoudNotificationChime() {
     }
 
     const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.setValueAtTime(-20, ctx.currentTime);
-    compressor.knee.setValueAtTime(25, ctx.currentTime);
-    compressor.ratio.setValueAtTime(10, ctx.currentTime);
-    compressor.attack.setValueAtTime(0.003, ctx.currentTime);
-    compressor.release.setValueAtTime(0.25, ctx.currentTime);
+    compressor.threshold.setValueAtTime(-15, ctx.currentTime);
+    compressor.knee.setValueAtTime(20, ctx.currentTime);
+    compressor.ratio.setValueAtTime(12, ctx.currentTime);
+    compressor.attack.setValueAtTime(0.002, ctx.currentTime);
+    compressor.release.setValueAtTime(0.2, ctx.currentTime);
 
     const masterGain = ctx.createGain();
-    masterGain.gain.setValueAtTime(0.9, ctx.currentTime);
-    masterGain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.2);
+    masterGain.gain.setValueAtTime(1.0, ctx.currentTime);
+    masterGain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.4);
 
-    // Harmonic bell triad: E5 (659.25Hz), A5 (880Hz), C#6 (1108.73Hz), E6 (1318.51Hz)
-    const notes = [
-      { freq: 659.25, delay: 0.0 },
-      { freq: 880.0, delay: 0.08 },
-      { freq: 1108.73, delay: 0.16 },
-      { freq: 1318.51, delay: 0.24 },
-    ];
-
-    notes.forEach(({ freq, delay }) => {
+    // Stark Holographic Arc Beacon: C#5, G#5, C#6, F#6 (Cyber HUD Beacon)
+    const frequencies = [554.37, 830.61, 1108.73, 1479.98];
+    frequencies.forEach((freq, idx) => {
       const osc = ctx.createOscillator();
       const oscGain = ctx.createGain();
 
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(freq, ctx.currentTime + delay);
+      osc.type = idx % 2 === 0 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.07);
 
-      oscGain.gain.setValueAtTime(0.45, ctx.currentTime + delay);
-      oscGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.85);
+      oscGain.gain.setValueAtTime(0.5, ctx.currentTime + idx * 0.07);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + idx * 0.07 + 0.9);
 
       osc.connect(oscGain);
       oscGain.connect(compressor);
 
-      osc.start(ctx.currentTime + delay);
-      osc.stop(ctx.currentTime + delay + 0.9);
+      osc.start(ctx.currentTime + idx * 0.07);
+      osc.stop(ctx.currentTime + idx * 0.07 + 0.95);
     });
 
     compressor.connect(masterGain);
     masterGain.connect(ctx.destination);
   } catch (err) {
-    console.warn('[Audio] Notification playback issue:', err);
+    console.warn('[Audio] Notification playback error:', err);
+  }
+}
+
+/**
+ * Displays OS-native browser notification with fallback
+ */
+function showBrowserNotification(userName: string, text: string, pageName?: string) {
+  try {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+
+    if (Notification.permission === 'granted') {
+      const title = `⚡ ${userName || 'Customer'} [${pageName || 'Messenger'}]`;
+      const body = text && text.trim() ? text : 'Sent a photo, video, or attachment.';
+      const notification = new Notification(title, {
+        body,
+        icon: '/favicon.svg',
+        tag: 'fb-chat-alert',
+        silent: false,
+      });
+
+      notification.onclick = () => {
+        window.focus();
+        notification.close();
+      };
+    } else if (Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  } catch (err) {
+    console.warn('[Notification] Browser notification error:', err);
   }
 }
 
@@ -137,6 +160,20 @@ export const App: React.FC = () => {
   const [socketConnected, setSocketConnected] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [hasAutoSynced, setHasAutoSynced] = useState(false);
+  const [hudToast, setHudToast] = useState<{
+    title: string;
+    body: string;
+    pageName?: string;
+    convId: string;
+  } | null>(null);
+
+  // Auto-dismiss HUD toast after 6 seconds
+  useEffect(() => {
+    if (hudToast) {
+      const timer = setTimeout(() => setHudToast(null), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [hudToast]);
 
   // Check auth session on boot
   useEffect(() => {
@@ -175,19 +212,6 @@ export const App: React.FC = () => {
       Notification.requestPermission().catch(() => {});
     }
   }, []);
-
-  const showBrowserNotification = (senderName: string, text: string, pageName?: string) => {
-    try {
-      if ('Notification' in window && Notification.permission === 'granted') {
-        const title = pageName ? `💬 ${senderName} (${pageName})` : `💬 ${senderName}`;
-        new Notification(title, {
-          body: text || 'New message/attachment received',
-          icon: '/favicon.ico',
-          silent: false,
-        });
-      }
-    } catch {}
-  };
 
   // Reconcile and save persistent pages vault
   const syncAndSaveVault = useCallback(async (serverPages: PageData[]) => {
@@ -425,6 +449,12 @@ export const App: React.FC = () => {
             message.text,
             conversation.page?.name
           );
+          setHudToast({
+            title: conversation.userName || 'Customer',
+            body: message.text || 'Sent an attachment / media',
+            pageName: conversation.page?.name,
+            convId: conversation.id,
+          });
         }
 
         // Update or insert conversation in list
@@ -687,6 +717,28 @@ export const App: React.FC = () => {
             .catch(() => {});
         }}
       />
+
+      {/* J.A.R.V.I.S. In-App Holographic Transmission Alert Toast */}
+      {hudToast && (
+        <div
+          className="hud-toast-alert"
+          onClick={() => {
+            setSelectedConversationId(hudToast.convId);
+            setActiveTab('inbox');
+            setHudToast(null);
+          }}
+          title="Click to open conversation transmission"
+        >
+          <div className="hud-toast-header">
+            <span className="hud-toast-tag">⚡ J.A.R.V.I.S. TRANSMISSION</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)' }}>
+              {hudToast.pageName || 'Messenger'}
+            </span>
+          </div>
+          <div className="hud-toast-sender">{hudToast.title}</div>
+          <div className="hud-toast-body">{hudToast.body}</div>
+        </div>
+      )}
     </div>
   );
 };
