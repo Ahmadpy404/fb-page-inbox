@@ -22,7 +22,7 @@ interface SettingsPanelProps {
   pages: PageData[];
   onUpdateGlobalAutoReply: (enabled: boolean) => Promise<void>;
   onVerifyConnection: () => Promise<void>;
-  onTriggerSync: () => Promise<void>;
+  onTriggerSync: (forceFullSync?: boolean) => Promise<void>;
   onOpenAddModal: () => void;
   onDeletePage: (id: string) => Promise<void>;
   onPlayLoudNotification: () => void;
@@ -342,19 +342,32 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             <div className="card-title-group">
               <h3>
                 <RefreshCw size={18} color="#f59e0b" />
-                Facebook History Backfill
+                Smart Delta Sync & History Backfill
               </h3>
-              <p>Fetch existing conversations and prior message history from Facebook Graph API.</p>
+              <p>Smart Delta Sync automatically fetches only new messages since your last sync in under a second. Deep Re-sync indexes entire history from scratch.</p>
             </div>
-            <button
-              className="secondary-btn"
-              onClick={onTriggerSync}
-              disabled={syncStatus?.inProgress}
-              id="btn-trigger-sync"
-            >
-              <RefreshCw size={14} className={syncStatus?.inProgress ? 'spin-icon' : ''} />
-              <span>{syncStatus?.inProgress ? 'Sync in Progress...' : 'Sync History Now'}</span>
-            </button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                className="secondary-btn"
+                onClick={() => onTriggerSync(false)}
+                disabled={syncStatus?.inProgress}
+                id="btn-trigger-delta-sync"
+                title="Only fetch new messages since last sync"
+              >
+                <RefreshCw size={14} className={syncStatus?.inProgress ? 'spin-icon' : ''} />
+                <span>{syncStatus?.inProgress ? 'Syncing...' : '⚡ Fast Delta Sync'}</span>
+              </button>
+              <button
+                className="ghost-btn"
+                onClick={() => onTriggerSync(true)}
+                disabled={syncStatus?.inProgress}
+                id="btn-trigger-full-sync"
+                title="Scan all historical conversations from 0"
+                style={{ fontSize: '12px' }}
+              >
+                <span>🔄 Deep Full Re-Sync</span>
+              </button>
+            </div>
           </div>
 
           {syncStatus && (
@@ -374,6 +387,35 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </div>
             </div>
           )}
+        </section>
+
+        {/* 7. 24/7 Keep-Alive & Cloud Persistence */}
+        <section className="setting-card">
+          <div className="card-header-row">
+            <div className="card-title-group">
+              <h3>
+                <Globe size={18} color="#10b981" />
+                24/7 Keep-Alive & Cloud Persistence
+              </h3>
+              <p>Keep your free Render server awake 24/7 so real-time webhooks, auto-replies, and chats never pause.</p>
+            </div>
+          </div>
+
+          <div className="info-field-group">
+            <div className="info-item" style={{ gridColumn: '1 / -1' }}>
+              <div className="info-label">Health & Heartbeat URL (Add to UptimeRobot / cron for 24/7 zero-sleep)</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '4px' }}>
+                <span className="info-value">{window.location.origin}/health</span>
+                <button
+                  className="icon-btn"
+                  onClick={() => copyToClipboard(`${window.location.origin}/health`, 'health')}
+                  title="Copy Health URL"
+                >
+                  {copiedField === 'health' ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+                </button>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
     </div>

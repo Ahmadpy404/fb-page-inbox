@@ -565,10 +565,13 @@ export const App: React.FC = () => {
     );
   };
 
-  const handleTriggerSync = async () => {
-    setSyncStatus({ inProgress: true, message: 'Starting deep Facebook sync...' });
+  const handleTriggerSync = async (forceFullSync?: boolean) => {
+    setSyncStatus({
+      inProgress: true,
+      message: forceFullSync ? 'Starting deep full Facebook sync...' : 'Checking for updates (Delta Sync)...',
+    });
     try {
-      await triggerSync(selectedPageId !== 'all' ? selectedPageId : undefined);
+      await triggerSync(selectedPageId !== 'all' ? selectedPageId : undefined, forceFullSync);
       await loadConversations();
       await loadPages();
     } catch (err: any) {

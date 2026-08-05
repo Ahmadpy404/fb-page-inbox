@@ -311,10 +311,15 @@ export class GraphApiClient {
    * Fetch ALL conversations from Meta Graph API using recursive cursor pagination.
    * Continues through data.paging.next until all chats are retrieved (up to maxConversations).
    */
+  /**
+   * Fetch ALL conversations from Meta Graph API using recursive cursor pagination.
+   * Supports incremental/delta syncing via optional `since` parameter (Unix seconds).
+   */
   async fetchAllConversations(
     pageId?: string,
     customToken?: string,
-    maxConversations: number = 3000
+    maxConversations: number = 3000,
+    since?: number
   ): Promise<any[]> {
     const token = (customToken || this.accessToken || '').trim();
     if (!token || token.startsWith('dev_') || token.startsWith('test_')) {
@@ -323,6 +328,7 @@ export class GraphApiClient {
 
     const proof = this.getAppSecretProof(token);
     const proofParam = proof ? `&appsecret_proof=${proof}` : '';
+    const sinceParam = since && since > 0 ? `&since=${since}` : '';
 
     const fields = 'id,snippet,updated_time,link,participants,messages{id,message,from,to,created_time,attachments{mime_type,name,size,image_data,video_data,file_url}}';
     const targets = pageId && pageId !== 'me' ? ['me', pageId] : ['me'];
@@ -332,7 +338,7 @@ export class GraphApiClient {
       const proofAttempts = proofParam ? [proofParam, ''] : [''];
 
       for (const pOption of proofAttempts) {
-        let currentUrl: string | null = `${this.baseUrl}/${target}/conversations?fields=${encodeURIComponent(fields)}&limit=50&access_token=${encodeURIComponent(token)}${pOption}`;
+        let currentUrl: string | null = `${this.baseUrl}/${target}/conversations?fields=${encodeURIComponent(fields)}&limit=50&access_token=${encodeURIComponent(token)}${sinceParam}${pOption}`;
         const allConversations: any[] = [];
         const seenIds = new Set<string>();
         let pageCount = 0;
@@ -341,7 +347,7 @@ export class GraphApiClient {
         while (currentUrl && allConversations.length < maxConversations && pageCount < 40) {
           pageCount++;
           try {
-            console.log(`[GraphApi] Fetching conversations page ${pageCount} for target=${target}...`);
+            console.log(`[GraphApi] Fetching conversations page ${pageCount} for target=${target}${since ? ` (since ${since})` : ''}...`);
             const response = await this.fetchFn(currentUrl, {
               method: 'GET',
               headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
@@ -435,7 +441,8 @@ export class GraphApiClient {
   async fetchAllConversationMessages(
     conversationId: string,
     customToken?: string,
-    maxMessages: number = 300
+    maxMessages: number = 300,
+    since?: number
   ): Promise<any[]> {
     const token = (customToken || this.accessToken || '').trim();
     if (!token || token.startsWith('dev_') || token.startsWith('test_')) {
@@ -444,10 +451,11 @@ export class GraphApiClient {
 
     const proof = this.getAppSecretProof(token);
     const proofParam = proof ? `&appsecret_proof=${proof}` : '';
+    const sinceParam = since && since > 0 ? `&since=${since}` : '';
 
     const proofAttempts = proofParam ? [proofParam, ''] : [''];
     for (const pOption of proofAttempts) {
-      let currentUrl: string | null = `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?fields=id,message,from,to,created_time,attachments{mime_type,name,size,image_data,video_data,file_url}&limit=50&access_token=${encodeURIComponent(token)}${pOption}`;
+      let currentUrl: string | null = `${this.baseUrl}/${encodeURIComponent(conversationId)}/messages?fields=id,message,from,to,created_time,attachments{mime_type,name,size,image_data,video_data,file_url}&limit=50&access_token=${encodeURIComponent(token)}${sinceParam}${pOption}`;
 
       const allMessages: any[] = [];
       const seenIds = new Set<string>();

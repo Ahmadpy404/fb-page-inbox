@@ -317,11 +317,19 @@ export async function markConversationRead(conversationId: string) {
 /**
  * Backfill conversation history from Meta Graph API for a specific or all active pages.
  */
-export async function backfillFromGraphApi(targetPageId?: string): Promise<{
+/**
+ * Backfill conversation history from Meta Graph API for a specific or all active pages.
+ * Supports smart Incremental Delta Sync (only fetches new messages since the last saved message).
+ */
+export async function backfillFromGraphApi(
+  targetPageId?: string,
+  options?: { forceFullSync?: boolean }
+): Promise<{
   conversationsSynced: number;
   messagesSynced: number;
+  isDelta?: boolean;
 }> {
-  emitSyncStatus({ inProgress: true, message: 'Initiating Facebook Graph API synchronization...' });
+  emitSyncStatus({ inProgress: true, message: 'Initiating smart inbox synchronization...' });
 
   try {
     let pagesToSync: Array<{ id: string; pageId: string; name: string; accessToken: string }> = [];
@@ -365,27 +373,55 @@ export async function backfillFromGraphApi(targetPageId?: string): Promise<{
     if (pagesToSync.length === 0) {
       const msg = 'No active Facebook Pages configured. Please add a Facebook Page to sync.';
       emitSyncStatus({ inProgress: false, total: 0, synced: 0, message: msg });
-      return { conversationsSynced: 0, messagesSynced: 0 };
+      return { conversationsSynced: 0, messagesSynced: 0, isDelta: false };
     }
 
     let totalConversationsCount = 0;
     let totalMessagesCount = 0;
+    let isDeltaSync = false;
 
     for (const page of pagesToSync) {
+      let sinceTimestamp: number | undefined;
+
+      if (!options?.forceFullSync) {
+        // Find most recent message timestamp in DB for this page
+        const latestMsg = await prisma.message.findFirst({
+          where: {
+            conversation: {
+              pageId: page.id,
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (latestMsg && latestMsg.createdAt) {
+          // 60-second safety buffer to capture concurrent updates
+          sinceTimestamp = Math.max(0, Math.floor(new Date(latestMsg.createdAt).getTime() / 1000) - 60);
+          isDeltaSync = true;
+        }
+      }
+
       emitSyncStatus({
         inProgress: true,
-        message: `Fetching conversation list from Meta for page: ${page.name}...`,
+        message: sinceTimestamp
+          ? `Checking for new updates on "${page.name}" (Delta Sync)...`
+          : `Fetching full conversation history from Meta for "${page.name}"...`,
       });
 
-      // Fetch ALL conversations (recursive cursor pagination)
+      // Fetch conversations from Meta Graph API
       const fbConversations = await graphApiClient.fetchAllConversations(
         page.pageId,
         page.accessToken,
-        3000
+        3000,
+        sinceTimestamp
       );
 
       const total = fbConversations.length;
-      console.log(`[Conversations] Page "${page.name}" has ${total} conversation(s) on Meta.`);
+      console.log(
+        `[Conversations] Page "${page.name}" returned ${total} conversation(s)${
+          sinceTimestamp ? ` since timestamp ${sinceTimestamp}` : ''
+        }.`
+      );
 
       if (total === 0) {
         continue;
@@ -395,7 +431,7 @@ export async function backfillFromGraphApi(targetPageId?: string): Promise<{
         inProgress: true,
         total,
         synced: 0,
-        message: `Syncing ${total} conversation(s) for "${page.name}"...`,
+        message: `Syncing ${total} active conversation(s) for "${page.name}"...`,
       });
 
       // Process in parallel chunks of 6
@@ -424,7 +460,8 @@ export async function backfillFromGraphApi(targetPageId?: string): Promise<{
                 fbMessages = await graphApiClient.fetchAllConversationMessages(
                   fbConv.id,
                   page.accessToken,
-                  300
+                  300,
+                  sinceTimestamp
                 );
               }
 
@@ -516,16 +553,22 @@ export async function backfillFromGraphApi(targetPageId?: string): Promise<{
       }
     }
 
+    const completionMessage =
+      isDeltaSync && totalConversationsCount === 0 && totalMessagesCount === 0
+        ? 'Inbox is up to date. (0 new changes)'
+        : `Sync complete! Synced ${totalConversationsCount} conversation(s) and ${totalMessagesCount} message(s).`;
+
     emitSyncStatus({
       inProgress: false,
       total: totalConversationsCount,
       synced: totalConversationsCount,
-      message: `Sync complete! Synced ${totalConversationsCount} conversation(s) and ${totalMessagesCount} message(s).`,
+      message: completionMessage,
     });
 
     return {
       conversationsSynced: totalConversationsCount,
       messagesSynced: totalMessagesCount,
+      isDelta: isDeltaSync,
     };
   } catch (err: any) {
     emitSyncStatus({

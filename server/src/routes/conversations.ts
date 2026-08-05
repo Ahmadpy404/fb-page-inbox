@@ -192,12 +192,13 @@ router.post('/:id/read', async (req: Request, res: Response) => {
 
 /**
  * POST /api/sync
- * Trigger full conversation history backfill from Facebook Graph API.
+ * Trigger conversation history backfill (Smart Delta Sync by default, or Force Full Sync).
  */
 router.post('/sync', async (req: Request, res: Response) => {
   try {
     const pageId = req.body?.pageId as string | undefined;
-    const result = await backfillFromGraphApi(pageId);
+    const forceFullSync = Boolean(req.body?.forceFullSync);
+    const result = await backfillFromGraphApi(pageId, { forceFullSync });
     return res.json({ success: true, ...result });
   } catch (err: any) {
     console.error('[API] Error syncing conversations:', err);

@@ -178,11 +178,14 @@ export async function markConversationAsRead(conversationId: string): Promise<{ 
   return res.json();
 }
 
-export async function triggerSync(pageId?: string): Promise<{ success: boolean; conversationsSynced: number; messagesSynced: number }> {
+export async function triggerSync(
+  pageId?: string,
+  forceFullSync?: boolean
+): Promise<{ success: boolean; conversationsSynced: number; messagesSynced: number; isDelta?: boolean }> {
   const res = await authFetch(`${API_BASE}/conversations/sync`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pageId }),
+    body: JSON.stringify({ pageId, forceFullSync }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Failed to sync' }));

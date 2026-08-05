@@ -28,6 +28,12 @@ async function startServer() {
       } catch (err: any) {
         console.warn('[Startup] Page auto-bootstrap error:', err.message || err);
       }
+
+      // Start 24/7 Keep-Alive heartbeat service
+      try {
+        const { startKeepAliveService } = await import('./services/keepAlive');
+        startKeepAliveService(port);
+      } catch {}
     });
   } catch (err: any) {
     console.error('Fatal error during startup:', err.message || err);
