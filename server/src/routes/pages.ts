@@ -65,31 +65,77 @@ router.post('/', async (req: Request, res: Response) => {
     let pageId = inputPageId;
     let pictureUrl: string | undefined;
 
-    // 1. Try to convert to permanent token if it's a short-lived user or page token
-    try {
-      const exchangeResult = await exchangeForPermanentPageToken(finalToken);
-      finalToken = exchangeResult.permanentPageToken;
-      if (!pageName) pageName = exchangeResult.pageName;
-    } catch {
-      // Continue with provided token if exchange fails or not needed
-    }
+    // 1. First inspect the token with Meta Graph API directly
+    let metaDetails: any = null;
+    let metaError: any = null;
 
-    // 2. Fetch page details from Meta using the token
     try {
       const detailsUrl = `https://graph.facebook.com/v19.0/me?fields=id,name,picture&access_token=${encodeURIComponent(finalToken)}`;
       const detailsRes = await fetch(detailsUrl);
-      const details = (await detailsRes.json()) as any;
-      if (details && details.id) {
-        pageId = details.id;
-        pageName = pageName || details.name;
-        pictureUrl = details.picture?.data?.url;
+      metaDetails = (await detailsRes.json()) as any;
+      if (metaDetails && metaDetails.error) {
+        metaError = metaDetails.error;
+      } else if (metaDetails && metaDetails.id) {
+        pageId = metaDetails.id;
+        pageName = pageName || metaDetails.name;
+        pictureUrl = metaDetails.picture?.data?.url;
       }
     } catch (e: any) {
-      console.warn('[Pages] Could not fetch page details from Meta:', e.message);
+      console.warn('[Pages] Direct /me check error:', e.message);
     }
 
+    // 2. If token is a User Token or direct /me was not a Page, check /me/accounts
+    if (!pageId && !metaError) {
+      try {
+        const accountsUrl = `https://graph.facebook.com/v19.0/me/accounts?access_token=${encodeURIComponent(finalToken)}`;
+        const accountsRes = await fetch(accountsUrl);
+        const accountsData = (await accountsRes.json()) as any;
+
+        if (accountsData && Array.isArray(accountsData.data) && accountsData.data.length > 0) {
+          const matchedPage = inputPageId
+            ? accountsData.data.find((p: any) => p.id === inputPageId) || accountsData.data[0]
+            : accountsData.data[0];
+
+          if (matchedPage) {
+            pageId = matchedPage.id;
+            pageName = pageName || matchedPage.name;
+            if (matchedPage.access_token) {
+              finalToken = matchedPage.access_token;
+            }
+          }
+        }
+      } catch (e: any) {
+        console.warn('[Pages] /me/accounts check error:', e.message);
+      }
+    }
+
+    // 3. Try to convert to permanent token if possible
+    try {
+      const exchangeResult = await exchangeForPermanentPageToken(finalToken, pageId);
+      if (exchangeResult && exchangeResult.permanentPageToken) {
+        finalToken = exchangeResult.permanentPageToken;
+        if (!pageName) pageName = exchangeResult.pageName;
+        if (!pageId) pageId = exchangeResult.pageId;
+      }
+    } catch {
+      // Continue with valid token if exchange is not applicable
+    }
+
+    // 4. If we still don't have pageId, check if we had a specific Meta error
     if (!pageId) {
-      return res.status(400).json({ error: 'Could not determine Facebook Page ID from token' });
+      if (metaError) {
+        if (metaError.code === 190 && metaError.error_subcode === 463) {
+          return res.status(400).json({
+            error: 'This Facebook Access Token has expired. Please generate a fresh User or Page Access Token from Meta Graph API Explorer.',
+          });
+        }
+        return res.status(400).json({
+          error: `Facebook API Error (${metaError.code}): ${metaError.message || 'Invalid access token'}`,
+        });
+      }
+      return res.status(400).json({
+        error: 'Could not determine Facebook Page from token. Please ensure the token has "pages_show_list", "pages_messaging", and "pages_read_engagement" permissions.',
+      });
     }
 
     // 3. Upsert Page in DB
