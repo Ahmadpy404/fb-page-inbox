@@ -718,7 +718,7 @@ export const App: React.FC = () => {
         }}
       />
 
-      {/* J.A.R.V.I.S. In-App Holographic Transmission Alert Toast */}
+      {/* In-App Message Alert Toast */}
       {hudToast && (
         <div
           className="hud-toast-alert"
@@ -727,10 +727,10 @@ export const App: React.FC = () => {
             setActiveTab('inbox');
             setHudToast(null);
           }}
-          title="Click to open conversation transmission"
+          title="Click to open conversation"
         >
           <div className="hud-toast-header">
-            <span className="hud-toast-tag">⚡ J.A.R.V.I.S. TRANSMISSION</span>
+            <span className="hud-toast-tag">💬 NEW MESSAGE</span>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)' }}>
               {hudToast.pageName || 'Messenger'}
             </span>
