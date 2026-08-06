@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Bot,
   RefreshCw,
@@ -13,6 +13,11 @@ import {
   Globe,
   Plus,
   Trash2,
+  Clock,
+  Sparkles,
+  Zap,
+  Flame,
+  Save,
 } from 'lucide-react';
 import { SettingsData, SyncStatus, PageData } from '../../types';
 
@@ -21,6 +26,12 @@ interface SettingsPanelProps {
   syncStatus?: SyncStatus;
   pages: PageData[];
   onUpdateGlobalAutoReply: (enabled: boolean) => Promise<void>;
+  onUpdateFollowUpSettings?: (updates: {
+    followUpEnabled?: boolean;
+    followUpHours?: number;
+    followUpTemplate?: string;
+  }) => Promise<void>;
+  onTriggerFollowUpNow?: () => Promise<{ success: boolean; sentCount: number; message: string }>;
   onVerifyConnection: () => Promise<void>;
   onTriggerSync: (forceFullSync?: boolean) => Promise<void>;
   onOpenAddModal: () => void;
@@ -33,6 +44,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   syncStatus,
   pages,
   onUpdateGlobalAutoReply,
+  onUpdateFollowUpSettings,
+  onTriggerFollowUpNow,
   onVerifyConnection,
   onTriggerSync,
   onOpenAddModal,
@@ -41,6 +54,64 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 }) => {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [triggeringFollowUp, setTriggeringFollowUp] = useState(false);
+  const [followUpTriggerResult, setFollowUpTriggerResult] = useState<string | null>(null);
+  const [followUpSaving, setFollowUpSaving] = useState(false);
+  const [followUpSaveSuccess, setFollowUpSaveSuccess] = useState(false);
+
+  // Local follow-up editable state
+  const [followUpEnabled, setFollowUpEnabled] = useState(
+    settings?.followUpConfig?.enabled ?? true
+  );
+  const [followUpHours, setFollowUpHours] = useState(
+    settings?.followUpConfig?.triggerHours ?? 21
+  );
+  const [followUpTemplate, setFollowUpTemplate] = useState(
+    settings?.followUpConfig?.templateText ??
+      '🔥 Quick reminder: Your exclusive bonus & $5 freeplay is reserved for just a few more hours! Reply "YES" or message us here to claim it before time runs out. 🎁'
+  );
+
+  useEffect(() => {
+    if (settings?.followUpConfig) {
+      setFollowUpEnabled(settings.followUpConfig.enabled);
+      setFollowUpHours(settings.followUpConfig.triggerHours);
+      setFollowUpTemplate(settings.followUpConfig.templateText);
+    }
+  }, [settings?.followUpConfig]);
+
+  const handleSaveFollowUp = async () => {
+    if (!onUpdateFollowUpSettings) return;
+    setFollowUpSaving(true);
+    setFollowUpSaveSuccess(false);
+    try {
+      await onUpdateFollowUpSettings({
+        followUpEnabled,
+        followUpHours: Number(followUpHours),
+        followUpTemplate,
+      });
+      setFollowUpSaveSuccess(true);
+      setTimeout(() => setFollowUpSaveSuccess(false), 3000);
+    } catch (err: any) {
+      alert(`Failed to save follow-up settings: ${err.message || err}`);
+    } finally {
+      setFollowUpSaving(false);
+    }
+  };
+
+  const handleTriggerFollowUpScan = async () => {
+    if (!onTriggerFollowUpNow) return;
+    setTriggeringFollowUp(true);
+    setFollowUpTriggerResult(null);
+    try {
+      const res = await onTriggerFollowUpNow();
+      setFollowUpTriggerResult(res.message || `Scanned! Sent ${res.sentCount} follow-ups.`);
+      setTimeout(() => setFollowUpTriggerResult(null), 5000);
+    } catch (err: any) {
+      setFollowUpTriggerResult(`Scan failed: ${err.message || err}`);
+    } finally {
+      setTriggeringFollowUp(false);
+    }
+  };
   const [notificationStatus, setNotificationStatus] = useState<string>(
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
   );
@@ -238,7 +309,125 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </div>
         </section>
 
-        {/* 4. Meta Graph API Connection Health */}
+        {/* 4. 23rd-Hour Re-Engagement & Window Protection Engine */}
+        <section className="setting-card" style={{ gridColumn: '1 / -1', border: '1px solid rgba(245, 158, 11, 0.3)', background: 'linear-gradient(135deg, rgba(26, 34, 51, 0.95), rgba(30, 27, 45, 0.95))' }}>
+          <div className="card-header-row">
+            <div className="card-title-group">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span className="badge-pill" style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.4)' }}>
+                  <Flame size={13} />
+                  <span>24-Hour Policy Protector</span>
+                </span>
+                <span className="badge-pill" style={{ background: 'rgba(99, 102, 241, 0.2)', color: '#818cf8', border: '1px solid rgba(99, 102, 241, 0.4)' }}>
+                  <Zap size={13} />
+                  <span>Auto Re-Engagement</span>
+                </span>
+              </div>
+              <h3 style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Clock size={20} color="#f59e0b" />
+                23rd-Hour Auto-Followup Re-Engagement Engine
+              </h3>
+              <p>
+                Automatically pings customers with a freeplay/bonus incentive between the 18th to 23rd hour before Meta's 24-hour window expires. When they reply, their 24h messaging window is 100% refreshed!
+              </p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={followUpEnabled}
+                  onChange={(e) => setFollowUpEnabled(e.target.checked)}
+                  id="switch-followup-engine"
+                />
+                <span className="slider" />
+              </label>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginTop: '16px' }}>
+            <div className="info-item" style={{ background: 'rgba(0, 0, 0, 0.25)', padding: '14px', borderRadius: '12px', border: '1px solid rgba(255, 255, 255, 0.05)' }}>
+              <label className="info-label" style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', color: '#e2e8f0' }}>
+                <Clock size={14} color="#f59e0b" />
+                <span>Re-Engagement Trigger Time (Hours after last customer message)</span>
+              </label>
+              <select
+                value={followUpHours}
+                onChange={(e) => setFollowUpHours(Number(e.target.value))}
+                className="select-input"
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', background: 'var(--clay-bg-input)', color: '#fff', border: '1px solid rgba(255,255,255,0.1)' }}
+              >
+                <option value={18}>18 Hours (Safe early follow-up)</option>
+                <option value={20}>20 Hours (Recommended)</option>
+                <option value={21}>21 Hours (Optimal for bonus reminder)</option>
+                <option value={22}>22 Hours (Last call reminder)</option>
+                <option value={23}>23 Hours (Final hour urgent ping)</option>
+              </select>
+              <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                Messages are only sent while inside Meta's policy window so delivery is 100% guaranteed.
+              </p>
+            </div>
+
+            <div className="info-item" style={{ background: 'rgba(0, 0, 0, 0.25)', padding: '14px', borderRadius: '12px', border: '1px solid rgba(255, 255, 255, 0.05)' }}>
+              <label className="info-label" style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', color: '#e2e8f0' }}>
+                <Sparkles size={14} color="#a855f7" />
+                <span>Re-Engagement Message Template</span>
+              </label>
+              <textarea
+                value={followUpTemplate}
+                onChange={(e) => setFollowUpTemplate(e.target.value)}
+                rows={3}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  background: 'var(--clay-bg-input)',
+                  color: '#fff',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  fontFamily: 'inherit',
+                  fontSize: '13px',
+                  resize: 'vertical',
+                }}
+                placeholder="Enter re-engagement message..."
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '16px', flexWrap: 'wrap', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={handleSaveFollowUp}
+                disabled={followUpSaving}
+                id="btn-save-followup"
+              >
+                <Save size={14} />
+                <span>{followUpSaving ? 'Saving...' : followUpSaveSuccess ? 'Saved ✓' : 'Save Engine Settings'}</span>
+              </button>
+
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={handleTriggerFollowUpScan}
+                disabled={triggeringFollowUp}
+                id="btn-test-followup-scan"
+                title="Scan all leads right now and send pending follow-ups"
+              >
+                <RefreshCw size={14} className={triggeringFollowUp ? 'spin-icon' : ''} />
+                <span>{triggeringFollowUp ? 'Scanning leads...' : 'Run Auto-Scan Now'}</span>
+              </button>
+            </div>
+
+            {followUpTriggerResult && (
+              <span className="badge-pill" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '6px 12px' }}>
+                <CheckCircle2 size={13} />
+                {followUpTriggerResult}
+              </span>
+            )}
+          </div>
+        </section>
+
+        {/* 5. Meta Graph API Connection Health */}
         <section className="setting-card">
           <div className="card-header-row">
             <div className="card-title-group">

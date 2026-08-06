@@ -34,6 +34,14 @@ async function startServer() {
         const { startKeepAliveService } = await import('./services/keepAlive');
         startKeepAliveService(port);
       } catch {}
+
+      // Start 23rd-Hour Auto-Followup Re-engagement Worker
+      try {
+        const { startFollowUpWorker } = await import('./services/followUpEngine');
+        startFollowUpWorker(10); // Run every 10 minutes
+      } catch (err: any) {
+        console.warn('[Startup] Follow-up worker startup error:', err.message || err);
+      }
     });
   } catch (err: any) {
     console.error('Fatal error during startup:', err.message || err);

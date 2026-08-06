@@ -20,6 +20,8 @@ import {
   reorderRules,
   fetchSettings,
   updateGlobalAutoReply,
+  updateFollowUpSettings,
+  triggerFollowUpNow,
   verifyFacebookConnection,
   triggerSync,
   fetchPages,
@@ -703,6 +705,15 @@ export const App: React.FC = () => {
     setSettings((prev) => (prev ? { ...prev, globalAutoReply: result } : null));
   };
 
+  const handleUpdateFollowUpSettings = async (updates: {
+    followUpEnabled?: boolean;
+    followUpHours?: number;
+    followUpTemplate?: string;
+  }) => {
+    const updated = await updateFollowUpSettings(updates);
+    setSettings((prev) => (prev ? { ...prev, followUpConfig: updated.followUpConfig } : null));
+  };
+
   const handleVerifyFacebook = async () => {
     const status = await verifyFacebookConnection();
     setSettings((prev) =>
@@ -830,6 +841,8 @@ export const App: React.FC = () => {
             syncStatus={syncStatus}
             pages={pages}
             onUpdateGlobalAutoReply={handleUpdateGlobalAutoReply}
+            onUpdateFollowUpSettings={handleUpdateFollowUpSettings}
+            onTriggerFollowUpNow={triggerFollowUpNow}
             onVerifyConnection={handleVerifyFacebook}
             onTriggerSync={handleTriggerSync}
             onOpenAddModal={() => setIsAddPageModalOpen(true)}

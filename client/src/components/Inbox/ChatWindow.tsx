@@ -191,6 +191,14 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     );
   }
 
+  // Compute 24-hour Meta Messaging Policy Window
+  const lastInboundMsg = [...messages].reverse().find((m) => m.direction === 'inbound');
+  const lastInboundTime = lastInboundMsg ? new Date(lastInboundMsg.createdAt).getTime() : 0;
+  const nowTime = Date.now();
+  const elapsedHours = lastInboundTime ? (nowTime - lastInboundTime) / (1000 * 60 * 60) : 999;
+  const remainingHours = Math.max(0, 24 - elapsedHours);
+  const isInside24h = elapsedHours <= 24;
+
   return (
     <main
       className={`chat-window ${isDragging ? 'drag-over' : ''}`}
@@ -232,10 +240,53 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 <span className="page-context-tag">{conversation.page.name}</span>
               )}
             </div>
-            <div className="psid-chip">
-              PSID: {conversation.psid}
-              {conversation.isTyping && (
-                <span className="active-typing-pill"> • typing...</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '2px' }}>
+              <div className="psid-chip">
+                PSID: {conversation.psid}
+                {conversation.isTyping && (
+                  <span className="active-typing-pill"> • typing...</span>
+                )}
+              </div>
+
+              {/* 24-Hour Policy Window Live Indicator */}
+              {lastInboundTime > 0 && (
+                <div
+                  className="psid-chip"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    background: isInside24h
+                      ? remainingHours > 4
+                        ? 'rgba(16, 185, 129, 0.15)'
+                        : 'rgba(245, 158, 11, 0.2)'
+                      : 'rgba(244, 63, 94, 0.15)',
+                    color: isInside24h
+                      ? remainingHours > 4
+                        ? '#34d399'
+                        : '#fbbf24'
+                      : '#f87171',
+                    border: isInside24h
+                      ? remainingHours > 4
+                        ? '1px solid rgba(16, 185, 129, 0.3)'
+                        : '1px solid rgba(245, 158, 11, 0.4)'
+                      : '1px solid rgba(244, 63, 94, 0.3)',
+                  }}
+                  title={
+                    isInside24h
+                      ? `Customer replied ${elapsedHours.toFixed(1)}h ago. Window active for ~${remainingHours.toFixed(1)}h more.`
+                      : 'Meta 24h window has passed. Customer must message or reply to reopen standard messaging.'
+                  }
+                >
+                  <Clock size={11} />
+                  <span>
+                    {isInside24h
+                      ? `${remainingHours.toFixed(0)}h Window Active`
+                      : '24h Window Expired'}
+                  </span>
+                </div>
               )}
             </div>
           </div>

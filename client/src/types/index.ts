@@ -73,8 +73,15 @@ export interface FacebookStatus {
   error?: string;
 }
 
+export interface FollowUpConfig {
+  enabled: boolean;
+  triggerHours: number;
+  templateText: string;
+}
+
 export interface SettingsData {
   globalAutoReply: boolean;
+  followUpConfig?: FollowUpConfig;
   facebookStatus: FacebookStatus;
   webhookConfig: {
     callbackPath: string;

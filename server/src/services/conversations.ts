@@ -36,12 +36,24 @@ export async function getOrCreateConversation(
   }
 
   if (!conversation) {
-    const finalName = initialName || `User ${psid.length > 4 ? psid.slice(-4) : psid}`;
+    let finalName = initialName || `User ${psid.length > 4 ? psid.slice(-4) : psid}`;
+    let avatarUrl: string | undefined;
+
+    try {
+      const profile = await graphApiClient.getUserProfile(psid, fbPageId);
+      if (profile && (profile.name || profile.first_name)) {
+        finalName = profile.name || `${profile.first_name || ''} ${profile.last_name || ''}`.trim();
+        avatarUrl = profile.profile_pic || undefined;
+      }
+    } catch {
+      // ignore if profile not available
+    }
 
     conversation = await prisma.conversation.create({
       data: {
         psid,
         userName: finalName,
+        userAvatarUrl: avatarUrl,
         lastMessageAt: new Date(),
         unread: true,
         autoReplyEnabled: true,

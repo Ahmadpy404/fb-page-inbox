@@ -20,6 +20,10 @@ router.get('/', async (_req: Request, res: Response) => {
     });
     const globalAutoReply = autoReplySetting ? autoReplySetting.value === 'true' : true;
 
+    // Get 23rd-hour follow-up settings
+    const { getFollowUpConfig } = await import('../services/followUpEngine');
+    const followUpConfig = await getFollowUpConfig();
+
     // Check Facebook Graph API token health
     let fbStatus: {
       connected: boolean;
@@ -46,6 +50,7 @@ router.get('/', async (_req: Request, res: Response) => {
 
     return res.json({
       globalAutoReply,
+      followUpConfig,
       facebookStatus: fbStatus,
       webhookConfig: {
         callbackPath: '/webhook/facebook',
@@ -62,11 +67,11 @@ router.get('/', async (_req: Request, res: Response) => {
 
 /**
  * POST /api/settings
- * Update settings (e.g. global auto-reply on/off).
+ * Update settings (e.g. global auto-reply on/off, follow-up engine).
  */
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { globalAutoReply } = req.body;
+    const { globalAutoReply, followUpEnabled, followUpHours, followUpTemplate } = req.body;
 
     if (globalAutoReply !== undefined) {
       await prisma.setting.upsert({
@@ -76,13 +81,62 @@ router.post('/', async (req: Request, res: Response) => {
       });
     }
 
+    if (followUpEnabled !== undefined) {
+      await prisma.setting.upsert({
+        where: { key: 'auto_followup_enabled' },
+        update: { value: String(followUpEnabled) },
+        create: { key: 'auto_followup_enabled', value: String(followUpEnabled) },
+      });
+    }
+
+    if (followUpHours !== undefined) {
+      await prisma.setting.upsert({
+        where: { key: 'auto_followup_hours' },
+        update: { value: String(followUpHours) },
+        create: { key: 'auto_followup_hours', value: String(followUpHours) },
+      });
+    }
+
+    if (followUpTemplate !== undefined) {
+      await prisma.setting.upsert({
+        where: { key: 'auto_followup_template' },
+        update: { value: String(followUpTemplate) },
+        create: { key: 'auto_followup_template', value: String(followUpTemplate) },
+      });
+    }
+
+    const { getFollowUpConfig } = await import('../services/followUpEngine');
+    const updatedFollowUp = await getFollowUpConfig();
+
     return res.json({
       success: true,
       globalAutoReply: Boolean(globalAutoReply),
+      followUpConfig: updatedFollowUp,
     });
   } catch (err: any) {
     console.error('[API] Error updating settings:', err);
     return res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+/**
+ * POST /api/settings/trigger-followup-now
+ * Manually trigger follow-up re-engagement scan immediately.
+ */
+router.post('/trigger-followup-now', async (_req: Request, res: Response) => {
+  try {
+    const { checkAndSendFollowUps } = await import('../services/followUpEngine');
+    const count = await checkAndSendFollowUps();
+    return res.json({
+      success: true,
+      sentCount: count,
+      message: `Follow-up engine scan completed. Sent ${count} re-engagement messages.`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err.message || 'Failed to trigger follow-up scan',
+    });
   }
 });
 

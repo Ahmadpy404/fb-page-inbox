@@ -349,6 +349,26 @@ export async function verifyFacebookConnection(): Promise<{ connected: boolean; 
   return data;
 }
 
+export async function updateFollowUpSettings(settings: {
+  followUpEnabled?: boolean;
+  followUpHours?: number;
+  followUpTemplate?: string;
+}): Promise<SettingsData> {
+  const res = await authFetch(`${API_BASE}/settings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  if (!res.ok) throw new Error('Failed to update follow-up settings');
+  return res.json();
+}
+
+export async function triggerFollowUpNow(): Promise<{ success: boolean; sentCount: number; message: string }> {
+  const res = await authFetch(`${API_BASE}/settings/trigger-followup-now`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to trigger follow-up scan');
+  return res.json();
+}
+
 export async function subscribeWebhook(): Promise<{ success: boolean; message: string }> {
   const res = await authFetch(`${API_BASE}/settings/subscribe-webhook`, { method: 'POST' });
   const data = await res.json();
