@@ -34,27 +34,12 @@ export async function getOrCreateConversation(
   }
 
   if (!conversation) {
-    let userName = initialName;
-    let userAvatarUrl: string | undefined;
-
-    // Fetch user profile from Meta Graph API only if name is not already known
-    if (!userName) {
-      try {
-        const profile = await graphApiClient.getUserProfile(psid);
-        if (profile) {
-          userName = profile.name || (profile.first_name ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() : userName);
-          userAvatarUrl = profile.profile_pic;
-        }
-      } catch (err) {
-        console.warn(`[Conversations] Failed to fetch profile for PSID ${psid}:`, err);
-      }
-    }
+    const finalName = initialName || `User ${psid.length > 4 ? psid.slice(-4) : psid}`;
 
     conversation = await prisma.conversation.create({
       data: {
         psid,
-        userName: userName || `User ${psid.slice(-4)}`,
-        userAvatarUrl,
+        userName: finalName,
         lastMessageAt: new Date(),
         unread: true,
         autoReplyEnabled: true,
@@ -392,6 +377,18 @@ export async function backfillFromGraphApi(
     for (const page of pagesToSync) {
       let sinceTimestamp: number | undefined;
 
+      // 1. Pre-load all existing conversations from DB for this page for instant O(1) matching
+      const existingConversations = await prisma.conversation.findMany({
+        where: { pageId: page.id },
+        select: {
+          id: true,
+          psid: true,
+          lastMessageAt: true,
+          _count: { select: { messages: true } },
+        },
+      });
+      const existingConvMap = new Map(existingConversations.map((c) => [c.psid, c]));
+
       if (!options?.forceFullSync) {
         // Find most recent message timestamp in DB for this page
         const latestMsg = await prisma.message.findFirst({
@@ -413,40 +410,71 @@ export async function backfillFromGraphApi(
       emitSyncStatus({
         inProgress: true,
         message: sinceTimestamp
-          ? `Checking for new updates on "${page.name}" (Delta Sync)...`
-          : `Fetching full conversation history from Meta for "${page.name}"...`,
+          ? `Checking for new updates on "${page.name}" (Smart Delta Sync)...`
+          : `Fetching conversation history from Meta for "${page.name}"...`,
       });
 
-      // Fetch conversations from Meta Graph API
+      // Fetch conversations list from Meta Graph API
       const fbConversations = await graphApiClient.fetchAllConversations(
         page.pageId,
         page.accessToken,
-        3000,
+        options?.forceFullSync ? 3000 : 600,
         sinceTimestamp
       );
 
-      const total = fbConversations.length;
+      const totalReturned = fbConversations.length;
       console.log(
-        `[Conversations] Page "${page.name}" returned ${total} conversation(s)${
+        `[Conversations] Page "${page.name}" Meta returned ${totalReturned} conversation(s)${
           sinceTimestamp ? ` since timestamp ${sinceTimestamp}` : ''
         }.`
       );
 
-      if (total === 0) {
+      if (totalReturned === 0) {
         continue;
       }
 
+      // Filter: Only process threads that are either new or have newer updates than what we already stored
+      const threadsToSync = fbConversations.filter((fbConv) => {
+        if (options?.forceFullSync) return true;
+
+        const participants = fbConv.participants?.data || [];
+        const customer = participants.find((p: any) => p.id !== page.pageId) || participants[0];
+        const psid = customer?.id || fbConv.id;
+
+        const existing = existingConvMap.get(psid);
+        if (!existing || existing._count.messages === 0) return true;
+
+        const fbUpdated = fbConv.updated_time ? new Date(fbConv.updated_time).getTime() : 0;
+        const localUpdated = existing.lastMessageAt ? new Date(existing.lastMessageAt).getTime() : 0;
+
+        // If local DB is already up-to-date with Meta's timestamp, skip network message fetch
+        if (localUpdated > 0 && fbUpdated > 0 && localUpdated >= fbUpdated) {
+          return false;
+        }
+
+        return true;
+      });
+
+      console.log(
+        `[Conversations] Page "${page.name}": ${threadsToSync.length}/${totalReturned} thread(s) require message sync (${totalReturned - threadsToSync.length} skipped - already synced).`
+      );
+
+      if (threadsToSync.length === 0) {
+        continue;
+      }
+
+      const total = threadsToSync.length;
       emitSyncStatus({
         inProgress: true,
         total,
         synced: 0,
-        message: `Syncing ${total} active conversation(s) for "${page.name}"...`,
+        message: `Syncing ${total} updated conversation(s) for "${page.name}"...`,
       });
 
-      // Process in parallel chunks of 6
-      const BATCH_SIZE = 6;
-      for (let i = 0; i < fbConversations.length; i += BATCH_SIZE) {
-        const chunk = fbConversations.slice(i, i + BATCH_SIZE);
+      // Process in parallel batches of 4
+      const BATCH_SIZE = 4;
+      for (let i = 0; i < threadsToSync.length; i += BATCH_SIZE) {
+        const chunk = threadsToSync.slice(i, i + BATCH_SIZE);
 
         await Promise.all(
           chunk.map(async (fbConv, chunkIdx) => {
@@ -463,19 +491,24 @@ export async function backfillFromGraphApi(
               const customer =
                 participants.find((p: any) => p.id !== page.pageId) || participants[0];
 
+              let psid = customer?.id;
+              let userName = customer?.name;
+
+              const existingConv = psid ? existingConvMap.get(psid) : undefined;
+              const threadSince = existingConv?.lastMessageAt
+                ? Math.max(0, Math.floor(new Date(existingConv.lastMessageAt).getTime() / 1000) - 60)
+                : sinceTimestamp;
+
               // 2. Resolve messages
               let fbMessages = fbConv.messages?.data || [];
               if (fbMessages.length === 0) {
                 fbMessages = await graphApiClient.fetchAllConversationMessages(
                   fbConv.id,
                   page.accessToken,
-                  300,
-                  sinceTimestamp
+                  existingConv ? 100 : 300,
+                  threadSince
                 );
               }
-
-              let psid = customer?.id;
-              let userName = customer?.name;
 
               if (!psid && fbMessages.length > 0) {
                 for (const msg of fbMessages) {
@@ -491,11 +524,22 @@ export async function backfillFromGraphApi(
                 psid = fbConv.id;
               }
 
-              // 3. Upsert conversation
-              const conversation = await getOrCreateConversation(psid, userName, page.pageId);
+              // 3. Resolve conversation ID (O(1) in-memory or create if new)
+              let conversationId = existingConv?.id;
+              if (!conversationId) {
+                const conversation = await getOrCreateConversation(psid, userName, page.pageId);
+                conversationId = conversation.id;
+                existingConvMap.set(psid, {
+                  id: conversation.id,
+                  psid,
+                  lastMessageAt: conversation.lastMessageAt,
+                  _count: { messages: 0 },
+                });
+              }
               totalConversationsCount++;
 
-              // 4. Ingest messages
+              // 4. Batch Ingest messages
+              const messagesToInsert: any[] = [];
               for (const fbMsg of fbMessages) {
                 if (!fbMsg.id) continue;
 
@@ -503,47 +547,59 @@ export async function backfillFromGraphApi(
                 const direction = isFromPage ? 'outbound_manual' : 'inbound';
                 const createdAt = fbMsg.created_time ? new Date(fbMsg.created_time) : new Date();
 
-                const existing = await prisma.message.findUnique({
-                  where: { fbMessageId: fbMsg.id },
-                });
+                let attachmentsJson: string | undefined;
+                if (
+                  fbMsg.attachments &&
+                  Array.isArray(fbMsg.attachments.data) &&
+                  fbMsg.attachments.data.length > 0
+                ) {
+                  const attList = fbMsg.attachments.data
+                    .map((att: any) => ({
+                      type: att.video_data ? 'video' : att.image_data ? 'image' : 'file',
+                      url: att.image_data?.url || att.video_data?.url || att.file_url,
+                      name: att.name,
+                    }))
+                    .filter((a: any) => a.url);
 
-                if (!existing) {
-                  let attachmentsJson: string | undefined;
-                  if (
-                    fbMsg.attachments &&
-                    Array.isArray(fbMsg.attachments.data) &&
-                    fbMsg.attachments.data.length > 0
-                  ) {
-                    const attList = fbMsg.attachments.data
-                      .map((att: any) => ({
-                        type: att.video_data ? 'video' : att.image_data ? 'image' : 'file',
-                        url: att.image_data?.url || att.video_data?.url || att.file_url,
-                        name: att.name,
-                      }))
-                      .filter((a: any) => a.url);
-
-                    if (attList.length > 0) {
-                      attachmentsJson = JSON.stringify(attList);
-                    }
+                  if (attList.length > 0) {
+                    attachmentsJson = JSON.stringify(attList);
                   }
+                }
 
-                  await prisma.message.create({
-                    data: {
-                      conversationId: conversation.id,
-                      direction,
-                      text: fbMsg.message || '',
-                      attachments: attachmentsJson,
-                      createdAt,
-                      fbMessageId: fbMsg.id,
-                    },
+                messagesToInsert.push({
+                  conversationId,
+                  direction,
+                  text: fbMsg.message || '',
+                  attachments: attachmentsJson,
+                  createdAt,
+                  fbMessageId: fbMsg.id,
+                });
+              }
+
+              if (messagesToInsert.length > 0) {
+                const existingMsgIds = new Set(
+                  (
+                    await prisma.message.findMany({
+                      where: { conversationId },
+                      select: { fbMessageId: true },
+                    })
+                  )
+                    .map((m) => m.fbMessageId)
+                    .filter(Boolean)
+                );
+
+                const freshMessages = messagesToInsert.filter((m) => !existingMsgIds.has(m.fbMessageId));
+                if (freshMessages.length > 0) {
+                  const insertRes = await prisma.message.createMany({
+                    data: freshMessages,
                   });
-                  totalMessagesCount++;
+                  totalMessagesCount += insertRes.count;
                 }
               }
 
-              if (fbConv.updated_time) {
+              if (fbConv.updated_time && conversationId) {
                 await prisma.conversation.update({
-                  where: { id: conversation.id },
+                  where: { id: conversationId },
                   data: { lastMessageAt: new Date(fbConv.updated_time) },
                 });
               }

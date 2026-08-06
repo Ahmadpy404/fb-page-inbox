@@ -33,6 +33,63 @@ function getInitials(name?: string | null): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
+interface ConversationItemProps {
+  conv: Conversation;
+  isSelected: boolean;
+  onSelect: (id: string) => void;
+}
+
+const ConversationItem = React.memo<ConversationItemProps>(({ conv, isSelected, onSelect }) => {
+  const snippetPrefix =
+    conv.lastMessage?.direction === 'outbound_manual'
+      ? 'You: '
+      : conv.lastMessage?.direction === 'outbound_auto'
+      ? '🤖: '
+      : '';
+
+  return (
+    <div
+      className={`conversation-item ${isSelected ? 'active' : ''} ${conv.unread ? 'unread' : ''}`}
+      onClick={() => onSelect(conv.id)}
+      id={`conv-item-${conv.id}`}
+    >
+      <div className="avatar-wrapper">
+        {conv.userAvatarUrl ? (
+          <img src={conv.userAvatarUrl} alt={conv.userName || 'User'} className="avatar-img" loading="lazy" />
+        ) : (
+          <div className="avatar-placeholder">{getInitials(conv.userName)}</div>
+        )}
+        {conv.unread && <div className="unread-badge-dot" />}
+      </div>
+
+      <div className="conversation-info">
+        <div className="conversation-title-row">
+          <span className="conversation-name">{conv.userName || `User ${conv.psid.slice(-6)}`}</span>
+          <span className="conversation-time">{formatRelativeTime(conv.lastMessageAt)}</span>
+        </div>
+
+        <div className="conversation-snippet-row">
+          <span className="conversation-snippet">
+            {conv.lastMessage ? `${snippetPrefix}${conv.lastMessage.text}` : 'No messages yet'}
+          </span>
+
+          {conv.autoReplyEnabled ? (
+            <span className="bot-tag active" title="Auto-reply enabled for this conversation">
+              <Bot size={10} />
+              Auto
+            </span>
+          ) : (
+            <span className="bot-tag muted" title="Auto-reply muted by admin">
+              <BellOff size={10} />
+              Muted
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export const ConversationList: React.FC<ConversationListProps> = ({
   conversations,
   selectedConversationId,
@@ -118,58 +175,14 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             </p>
           </div>
         ) : (
-          filteredConversations.map((conv) => {
-            const isSelected = conv.id === selectedConversationId;
-            const snippetPrefix =
-              conv.lastMessage?.direction === 'outbound_manual'
-                ? 'You: '
-                : conv.lastMessage?.direction === 'outbound_auto'
-                ? '🤖: '
-                : '';
-
-            return (
-              <div
-                key={conv.id}
-                className={`conversation-item ${isSelected ? 'active' : ''} ${conv.unread ? 'unread' : ''}`}
-                onClick={() => onSelectConversation(conv.id)}
-                id={`conv-item-${conv.id}`}
-              >
-                <div className="avatar-wrapper">
-                  {conv.userAvatarUrl ? (
-                    <img src={conv.userAvatarUrl} alt={conv.userName || 'User'} className="avatar-img" />
-                  ) : (
-                    <div className="avatar-placeholder">{getInitials(conv.userName)}</div>
-                  )}
-                  {conv.unread && <div className="unread-badge-dot" />}
-                </div>
-
-                <div className="conversation-info">
-                  <div className="conversation-title-row">
-                    <span className="conversation-name">{conv.userName || `User ${conv.psid.slice(-6)}`}</span>
-                    <span className="conversation-time">{formatRelativeTime(conv.lastMessageAt)}</span>
-                  </div>
-
-                  <div className="conversation-snippet-row">
-                    <span className="conversation-snippet">
-                      {conv.lastMessage ? `${snippetPrefix}${conv.lastMessage.text}` : 'No messages yet'}
-                    </span>
-
-                    {conv.autoReplyEnabled ? (
-                      <span className="bot-tag active" title="Auto-reply enabled for this conversation">
-                        <Bot size={10} />
-                        Auto
-                      </span>
-                    ) : (
-                      <span className="bot-tag muted" title="Auto-reply muted by admin">
-                        <BellOff size={10} />
-                        Muted
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })
+          filteredConversations.map((conv) => (
+            <ConversationItem
+              key={conv.id}
+              conv={conv}
+              isSelected={conv.id === selectedConversationId}
+              onSelect={onSelectConversation}
+            />
+          ))
         )}
       </div>
     </aside>

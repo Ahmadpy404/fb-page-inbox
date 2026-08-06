@@ -235,7 +235,10 @@ export class GraphApiClient {
       const fields = 'first_name,last_name,name,profile_pic';
       const url = `${this.baseUrl}/${encodeURIComponent(psid)}?fields=${fields}&access_token=${encodeURIComponent(this.accessToken)}`;
 
-      const response = await this.fetchFn(url, { method: 'GET' });
+      const response = await this.fetchFn(url, {
+        method: 'GET',
+        signal: AbortSignal.timeout(3500),
+      });
       const data = (await response.json()) as any;
 
       if (!response.ok || data?.error) {
@@ -330,21 +333,22 @@ export class GraphApiClient {
     const proofParam = proof ? `&appsecret_proof=${proof}` : '';
     const sinceParam = since && since > 0 ? `&since=${since}` : '';
 
-    const fields = 'id,snippet,updated_time,link,participants,messages{id,message,from,to,created_time,attachments{mime_type,name,size,image_data,video_data,file_url}}';
-    const targets = pageId && pageId !== 'me' ? ['me', pageId] : ['me'];
+    // Use clean, lightweight fields so Meta does not reject with 500 'reduce data' error
+    const fields = 'id,snippet,updated_time,link,participants,unread_count';
+    const targets = pageId && pageId !== 'me' ? [pageId, 'me'] : ['me'];
 
     for (const target of targets) {
       // Try with proof first (if available), then without proof if signature mismatch occurs
       const proofAttempts = proofParam ? [proofParam, ''] : [''];
 
       for (const pOption of proofAttempts) {
-        let currentUrl: string | null = `${this.baseUrl}/${target}/conversations?fields=${encodeURIComponent(fields)}&limit=50&access_token=${encodeURIComponent(token)}${sinceParam}${pOption}`;
+        let currentUrl: string | null = `${this.baseUrl}/${target}/conversations?fields=${encodeURIComponent(fields)}&limit=100&access_token=${encodeURIComponent(token)}${sinceParam}${pOption}`;
         const allConversations: any[] = [];
         const seenIds = new Set<string>();
         let pageCount = 0;
         let hadError = false;
 
-        while (currentUrl && allConversations.length < maxConversations && pageCount < 40) {
+        while (currentUrl && allConversations.length < maxConversations && pageCount < 60) {
           pageCount++;
           try {
             console.log(`[GraphApi] Fetching conversations page ${pageCount} for target=${target}${since ? ` (since ${since})` : ''}...`);
@@ -388,7 +392,7 @@ export class GraphApiClient {
         }
 
         if (!hadError || allConversations.length > 0) {
-          console.log(`[GraphApi] Successfully retrieved ${allConversations.length} conversation(s) from Meta Graph API.`);
+          console.log(`[GraphApi] Successfully retrieved ${allConversations.length} conversation(s) from Meta Graph API for target=${target}.`);
           return allConversations;
         }
       }
@@ -423,6 +427,7 @@ export class GraphApiClient {
         const response = await this.fetchFn(url, {
           method: 'GET',
           headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
+          signal: AbortSignal.timeout(5000),
         });
         const data = (await response.json()) as any;
         if (response.ok && !data?.error) {
@@ -468,6 +473,7 @@ export class GraphApiClient {
           const response = await this.fetchFn(currentUrl, {
             method: 'GET',
             headers: { 'User-Agent': 'FBPageUnifiedInbox/1.0' },
+            signal: AbortSignal.timeout(5000),
           });
           const data = (await response.json()) as any;
 

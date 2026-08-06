@@ -664,9 +664,11 @@ body::before {
   border: 1px solid rgba(255, 255, 255, 0.03);
   box-shadow: var(--shadow-clay-card);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: transform 0.12s ease, background 0.12s ease;
   position: relative;
   user-select: none;
+  contain: content;
+  transform: translateZ(0);
 }
 
 .conversation-item:hover {
@@ -923,6 +925,7 @@ body::before {
   display: flex;
   flex-direction: column;
   width: 100%;
+  transform: translateZ(0);
 }
 
 /* 🟢 INBOUND MESSAGE (From Customer) -> ALIGNED LEFT */

@@ -91,7 +91,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         <button
           className="sync-btn"
-          onClick={onTriggerSync}
+          onClick={() => onTriggerSync()}
           disabled={syncStatus?.inProgress}
           title="Backfill all conversation history from Meta Graph API"
           id="btn-sync-history"

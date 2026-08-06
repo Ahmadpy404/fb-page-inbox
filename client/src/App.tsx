@@ -375,30 +375,27 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    // Auto-refresh interval (3s) for bulletproof real-time sync
+    // Window focus & tab visibility handlers for instant refresh when returning to tab
+    const handleFocus = () => {
+      loadConversations();
+      loadPages();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+
+    // Gentle 30s background heartbeat (real-time is powered by Socket.IO)
     const interval = setInterval(() => {
       loadConversations();
       loadPages();
-      if (selectedConversationId) {
-        fetchConversationMessages(selectedConversationId)
-          .then((data) => {
-            setMessages((prev) => {
-              const deduped = deduplicateMessages(data.messages);
-              if (
-                prev.length !== deduped.length ||
-                (deduped.length > 0 && prev[prev.length - 1]?.id !== deduped[deduped.length - 1]?.id)
-              ) {
-                return deduped;
-              }
-              return prev;
-            });
-          })
-          .catch(() => {});
-      }
-    }, 3000);
+    }, 30000);
 
-    return () => clearInterval(interval);
-  }, [isAuthenticated, loadConversations, loadPages, selectedConversationId]);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
+      clearInterval(interval);
+    };
+  }, [isAuthenticated, loadConversations, loadPages]);
 
   // 2. Fetch Messages when selected conversation changes
   useEffect(() => {
@@ -596,12 +593,13 @@ export const App: React.FC = () => {
   };
 
   const handleTriggerSync = async (forceFullSync?: boolean) => {
+    const isForce = forceFullSync === true;
     setSyncStatus({
       inProgress: true,
-      message: forceFullSync ? 'Starting deep full Facebook sync...' : 'Checking for updates (Delta Sync)...',
+      message: isForce ? 'Starting deep full Facebook sync...' : 'Checking for updates (Delta Sync)...',
     });
     try {
-      await triggerSync(selectedPageId !== 'all' ? selectedPageId : undefined, forceFullSync);
+      await triggerSync(selectedPageId !== 'all' ? selectedPageId : undefined, isForce);
       await loadConversations();
       await loadPages();
     } catch (err: any) {

@@ -182,10 +182,13 @@ export async function triggerSync(
   pageId?: string,
   forceFullSync?: boolean
 ): Promise<{ success: boolean; conversationsSynced: number; messagesSynced: number; isDelta?: boolean }> {
+  const safePageId = typeof pageId === 'string' && pageId !== 'all' ? pageId.trim() : undefined;
+  const safeForceFull = forceFullSync === true;
+
   const res = await authFetch(`${API_BASE}/conversations/sync`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pageId, forceFullSync }),
+    body: JSON.stringify({ pageId: safePageId, forceFullSync: safeForceFull }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Failed to sync' }));

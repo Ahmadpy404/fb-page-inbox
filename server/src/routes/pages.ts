@@ -65,47 +65,49 @@ router.post('/', async (req: Request, res: Response) => {
     let pageId = inputPageId;
     let pictureUrl: string | undefined;
 
-    // 1. First inspect the token with Meta Graph API directly
+    // 1. Check /me/accounts first (for User tokens) and /me (for direct Page tokens)
     let metaDetails: any = null;
     let metaError: any = null;
 
+    // Check /me/accounts for user tokens
     try {
-      const detailsUrl = `https://graph.facebook.com/v19.0/me?fields=id,name,picture&access_token=${encodeURIComponent(finalToken)}`;
-      const detailsRes = await fetch(detailsUrl);
-      metaDetails = (await detailsRes.json()) as any;
-      if (metaDetails && metaDetails.error) {
-        metaError = metaDetails.error;
-      } else if (metaDetails && metaDetails.id) {
-        pageId = metaDetails.id;
-        pageName = pageName || metaDetails.name;
-        pictureUrl = metaDetails.picture?.data?.url;
-      }
-    } catch (e: any) {
-      console.warn('[Pages] Direct /me check error:', e.message);
-    }
+      const accountsUrl = `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token,picture,tasks&access_token=${encodeURIComponent(finalToken)}`;
+      const accountsRes = await fetch(accountsUrl);
+      const accountsData = (await accountsRes.json()) as any;
 
-    // 2. If token is a User Token or direct /me was not a Page, check /me/accounts
-    if (!pageId && !metaError) {
-      try {
-        const accountsUrl = `https://graph.facebook.com/v19.0/me/accounts?access_token=${encodeURIComponent(finalToken)}`;
-        const accountsRes = await fetch(accountsUrl);
-        const accountsData = (await accountsRes.json()) as any;
+      if (accountsData && Array.isArray(accountsData.data) && accountsData.data.length > 0) {
+        const matchedPage = inputPageId
+          ? accountsData.data.find((p: any) => p.id === inputPageId) || accountsData.data[0]
+          : accountsData.data[0];
 
-        if (accountsData && Array.isArray(accountsData.data) && accountsData.data.length > 0) {
-          const matchedPage = inputPageId
-            ? accountsData.data.find((p: any) => p.id === inputPageId) || accountsData.data[0]
-            : accountsData.data[0];
-
-          if (matchedPage) {
-            pageId = matchedPage.id;
-            pageName = pageName || matchedPage.name;
-            if (matchedPage.access_token) {
-              finalToken = matchedPage.access_token;
-            }
+        if (matchedPage) {
+          pageId = matchedPage.id;
+          pageName = pageName || matchedPage.name;
+          pictureUrl = matchedPage.picture?.data?.url;
+          if (matchedPage.access_token) {
+            finalToken = matchedPage.access_token;
           }
         }
+      }
+    } catch (e: any) {
+      console.warn('[Pages] /me/accounts check error:', e.message);
+    }
+
+    // If not found via /me/accounts, try direct /me (direct Page Token)
+    if (!pageId) {
+      try {
+        const detailsUrl = `https://graph.facebook.com/v19.0/me?fields=id,name,picture&access_token=${encodeURIComponent(finalToken)}`;
+        const detailsRes = await fetch(detailsUrl);
+        metaDetails = (await detailsRes.json()) as any;
+        if (metaDetails && metaDetails.error) {
+          metaError = metaDetails.error;
+        } else if (metaDetails && metaDetails.id) {
+          pageId = metaDetails.id;
+          pageName = pageName || metaDetails.name;
+          pictureUrl = metaDetails.picture?.data?.url;
+        }
       } catch (e: any) {
-        console.warn('[Pages] /me/accounts check error:', e.message);
+        console.warn('[Pages] Direct /me check error:', e.message);
       }
     }
 
@@ -118,10 +120,10 @@ router.post('/', async (req: Request, res: Response) => {
         if (!pageId) pageId = exchangeResult.pageId;
       }
     } catch {
-      // Continue with valid token if exchange is not applicable
+      // Continue with valid token
     }
 
-    // 4. If we still don't have pageId, check if we had a specific Meta error
+    // 4. If we still don't have pageId, check error
     if (!pageId) {
       if (metaError) {
         if (metaError.code === 190 && metaError.error_subcode === 463) {
