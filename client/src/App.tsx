@@ -762,7 +762,7 @@ export const App: React.FC = () => {
     conversations.find((c) => c.id === selectedConversationId) || null;
 
   return (
-    <div className="app-container">
+    <div className={`app-container ${activeTab === 'inbox' && mobileView === 'chat' ? 'mobile-chat-active' : ''}`}>
       <Navbar
         activeTab={activeTab}
         setActiveTab={(tab) => {

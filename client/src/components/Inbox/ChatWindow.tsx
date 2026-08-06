@@ -247,20 +247,22 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             onClick={() => onToggleAutoReply()}
             title={
               conversation.autoReplyEnabled
-                ? 'Auto-reply is active. Click to mute bot and take over manually.'
-                : 'Auto-reply is muted. Click to re-enable bot for this user.'
+                ? 'Auto-reply active. Tap to mute bot and take over manually.'
+                : 'Auto-reply muted. Tap to re-enable bot for this user.'
             }
             id="btn-toggle-auto-reply"
           >
             {conversation.autoReplyEnabled ? (
               <>
-                <Bot size={14} />
-                <span>Auto-Reply Active</span>
+                <Bot size={15} />
+                <span className="btn-label-desktop">Auto-Reply Active</span>
+                <span className="btn-label-mobile">Bot Active</span>
               </>
             ) : (
               <>
-                <BellOff size={14} />
-                <span>Auto-Reply Muted</span>
+                <BellOff size={15} />
+                <span className="btn-label-desktop">Auto-Reply Muted</span>
+                <span className="btn-label-mobile">Bot Muted</span>
               </>
             )}
           </button>
