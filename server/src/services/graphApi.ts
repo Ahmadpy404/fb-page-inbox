@@ -165,6 +165,10 @@ export class GraphApiClient {
         } else {
           console.warn(`[GraphApi] HUMAN_AGENT retry also failed:`, tagData?.error?.message || tagResponse.statusText);
         }
+
+        throw new Error(
+          `Meta 24-Hour Window Policy: Customer ne 24 ghantay se pehle message bheja tha (${errorMsg}). Facebook policy ke mutabiq customer jab dobara message bhejega tabhi reply send ho sakega.`
+        );
       }
 
       throw new Error(`Meta Graph API Error (${response.status}): ${errorMsg || 'Failed to send message'}`);
