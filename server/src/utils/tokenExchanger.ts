@@ -1,5 +1,5 @@
 const DEFAULT_APP_ID = '1728111101837341';
-const DEFAULT_APP_SECRET = '22338e523454d418adcdccde09db890b';
+const DEFAULT_APP_SECRET = 'bd9c2225839d1b8973c37337fcf564b3';
 
 export async function exchangeForPermanentPageToken(
   userOrPageToken: string,
@@ -11,8 +11,8 @@ export async function exchangeForPermanentPageToken(
   expiresIn: string;
 }> {
   const cleanToken = userOrPageToken.trim();
-  const appId = process.env.FB_APP_ID || DEFAULT_APP_ID;
-  const appSecret = process.env.FB_APP_SECRET || DEFAULT_APP_SECRET;
+  const appId = process.env.FB_APP_ID || process.env.APP_ID || DEFAULT_APP_ID;
+  const appSecret = process.env.FB_APP_SECRET || process.env.APP_SECRET || DEFAULT_APP_SECRET;
 
   // Step 1: Exchange for Long-Lived User Token
   const exchangeUrl = `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${encodeURIComponent(cleanToken)}`;
