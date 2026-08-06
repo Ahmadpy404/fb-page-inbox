@@ -285,8 +285,9 @@ export class GraphApiClient {
   /**
    * Fetch user profile (first_name, last_name, profile_pic) for a PSID
    */
-  async getUserProfile(psid: string): Promise<UserProfileResponse | null> {
-    if (this.accessToken.startsWith('dev_') || this.accessToken.startsWith('test_')) {
+  async getUserProfile(psid: string, pageAccessTokenOverride?: string): Promise<UserProfileResponse | null> {
+    const token = pageAccessTokenOverride || this.accessToken;
+    if (!token || token.startsWith('dev_') || token.startsWith('test_')) {
       return {
         id: psid,
         name: `Customer ${psid.slice(-4)}`,
@@ -297,7 +298,7 @@ export class GraphApiClient {
 
     try {
       const fields = 'first_name,last_name,name,profile_pic';
-      const url = `${this.baseUrl}/${encodeURIComponent(psid)}?fields=${fields}&access_token=${encodeURIComponent(this.accessToken)}`;
+      const url = `${this.baseUrl}/${encodeURIComponent(psid)}?fields=${fields}&access_token=${encodeURIComponent(token)}`;
 
       const response = await this.fetchFn(url, {
         method: 'GET',

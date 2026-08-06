@@ -24,15 +24,22 @@ export async function getOrCreateConversation(
     where: { psid },
   });
 
-  // Resolve internal page ID
+  // Resolve internal page ID & token
   let internalPageId: string | undefined;
+  let pageAccessToken: string | undefined;
   if (fbPageId) {
     const page = await prisma.page.findUnique({ where: { pageId: fbPageId } });
-    if (page) internalPageId = page.id;
+    if (page) {
+      internalPageId = page.id;
+      pageAccessToken = page.accessToken;
+    }
   }
   if (!internalPageId) {
     const defaultPage = await prisma.page.findFirst({ where: { isActive: true } });
-    if (defaultPage) internalPageId = defaultPage.id;
+    if (defaultPage) {
+      internalPageId = defaultPage.id;
+      pageAccessToken = defaultPage.accessToken;
+    }
   }
 
   if (!conversation) {
@@ -40,7 +47,7 @@ export async function getOrCreateConversation(
     let avatarUrl: string | undefined;
 
     try {
-      const profile = await graphApiClient.getUserProfile(psid, fbPageId);
+      const profile = await graphApiClient.getUserProfile(psid, pageAccessToken);
       if (profile && (profile.name || profile.first_name)) {
         finalName = profile.name || `${profile.first_name || ''} ${profile.last_name || ''}`.trim();
         avatarUrl = profile.profile_pic || undefined;
