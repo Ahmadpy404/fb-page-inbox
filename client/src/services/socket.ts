@@ -48,6 +48,8 @@ export function subscribeToRealtimeEvents(handlers: {
   onNewReply?: (payload: { message: Message; conversationId: string }) => void;
   onConversationUpdated?: (conversation: Conversation) => void;
   onSyncStatus?: (status: SyncStatus) => void;
+  onMessageRead?: (payload: { conversationId: string; watermark: number; readAt: string }) => void;
+  onTypingStatus?: (payload: { conversationId: string; isTyping: boolean }) => void;
 }) {
   const s = getSocket();
 
@@ -63,11 +65,19 @@ export function subscribeToRealtimeEvents(handlers: {
   if (handlers.onSyncStatus) {
     s.on('sync_status', handlers.onSyncStatus);
   }
+  if (handlers.onMessageRead) {
+    s.on('message_read', handlers.onMessageRead);
+  }
+  if (handlers.onTypingStatus) {
+    s.on('typing_status', handlers.onTypingStatus);
+  }
 
   return () => {
     if (handlers.onNewMessage) s.off('new_message', handlers.onNewMessage);
     if (handlers.onNewReply) s.off('new_reply', handlers.onNewReply);
     if (handlers.onConversationUpdated) s.off('conversation_updated', handlers.onConversationUpdated);
     if (handlers.onSyncStatus) s.off('sync_status', handlers.onSyncStatus);
+    if (handlers.onMessageRead) s.off('message_read', handlers.onMessageRead);
+    if (handlers.onTypingStatus) s.off('typing_status', handlers.onTypingStatus);
   };
 }

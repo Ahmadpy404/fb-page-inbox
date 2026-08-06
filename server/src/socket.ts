@@ -49,3 +49,16 @@ export function emitSyncStatus(status: { inProgress: boolean; total?: number; sy
     io.emit('sync_status', status);
   }
 }
+
+export function emitMessageRead(payload: { conversationId: string; watermark: number; readAt: string }): void {
+  if (io) {
+    io.emit('message_read', payload);
+  }
+}
+
+export function emitTypingStatus(payload: { conversationId: string; isTyping: boolean }): void {
+  if (io) {
+    io.emit('typing_status', payload);
+  }
+}
+

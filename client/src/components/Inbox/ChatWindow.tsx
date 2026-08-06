@@ -5,12 +5,15 @@ import {
   BellOff,
   MessageSquare,
   Check,
+  CheckCheck,
+  Clock,
   Sparkles,
   Paperclip,
   Video as VideoIcon,
   X,
   Maximize2,
   Download,
+  ChevronLeft,
 } from 'lucide-react';
 import { Conversation, Message, AttachmentItem } from '../../types';
 
@@ -21,6 +24,7 @@ interface ChatWindowProps {
   onSendReply: (text?: string, mediaFile?: File) => Promise<void>;
   onToggleAutoReply: (enabled?: boolean) => Promise<void>;
   onMarkAsRead: () => Promise<void>;
+  onBackToMobileList?: () => void;
 }
 
 function formatMessageTime(dateString: string): string {
@@ -50,6 +54,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   onSendReply,
   onToggleAutoReply,
   onMarkAsRead,
+  onBackToMobileList,
 }) => {
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
@@ -62,10 +67,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-scroll to bottom when messages change
+  // Auto-scroll to bottom when messages change or typing changes
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, filePreviewUrl]);
+  }, [messages, filePreviewUrl, conversation?.isTyping]);
 
   // Mark as read and auto-focus when conversation is opened
   useEffect(() => {
@@ -196,6 +201,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       {/* Header */}
       <header className="chat-header">
         <div className="chat-user-meta">
+          {/* Mobile Back to List button */}
+          {onBackToMobileList && (
+            <button
+              type="button"
+              className="mobile-back-btn"
+              onClick={onBackToMobileList}
+              title="Back to conversation list"
+            >
+              <ChevronLeft size={20} />
+              <span>Chats</span>
+            </button>
+          )}
+
           <div className="avatar-wrapper" style={{ width: '40px', height: '40px', minWidth: '40px' }}>
             {conversation.userAvatarUrl ? (
               <img
@@ -208,13 +226,18 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             )}
           </div>
           <div className="chat-user-details">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <h2>{conversation.userName || `User ${conversation.psid.slice(-6)}`}</h2>
               {conversation.page?.name && (
                 <span className="page-context-tag">{conversation.page.name}</span>
               )}
             </div>
-            <div className="psid-chip">PSID: {conversation.psid}</div>
+            <div className="psid-chip">
+              PSID: {conversation.psid}
+              {conversation.isTyping && (
+                <span className="active-typing-pill"> • typing...</span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -247,87 +270,137 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       {/* Messages Thread */}
       <div className="chat-messages-container" id="chat-messages-container">
         {loading && messages.length === 0 ? (
-          <div className="empty-state">
-            <p>Loading messages...</p>
+          <div className="skeleton-chat-container">
+            <div className="skeleton-bubble-row inbound">
+              <div className="skeleton-bubble shimmer" style={{ width: '65%', height: '48px' }} />
+            </div>
+            <div className="skeleton-bubble-row outbound">
+              <div className="skeleton-bubble shimmer" style={{ width: '45%', height: '36px' }} />
+            </div>
+            <div className="skeleton-bubble-row inbound">
+              <div className="skeleton-bubble shimmer" style={{ width: '75%', height: '54px' }} />
+            </div>
+            <div className="skeleton-bubble-row outbound">
+              <div className="skeleton-bubble shimmer" style={{ width: '50%', height: '40px' }} />
+            </div>
           </div>
         ) : messages.length === 0 ? (
           <div className="empty-state">
             <p>No messages in this conversation yet.</p>
           </div>
         ) : (
-          messages.map((msg) => {
-            const isInbound = msg.direction === 'inbound';
-            const isAuto = msg.direction === 'outbound_auto';
-            const isManual = msg.direction === 'outbound_manual';
-            const attachments = parseAttachments(msg.attachments);
+          <>
+            {messages.map((msg) => {
+              const isInbound = msg.direction === 'inbound';
+              const isAuto = msg.direction === 'outbound_auto';
+              const isManual = msg.direction === 'outbound_manual';
+              const attachments = parseAttachments(msg.attachments);
+              const isPending = msg.isPending === true;
+              const msgTime = new Date(msg.createdAt).getTime();
+              const isSeen = !isInbound && Boolean(conversation.readWatermark && msgTime <= conversation.readWatermark);
 
-            return (
-              <div
-                key={msg.id}
-                className={`message-row ${isInbound ? 'inbound' : 'outbound'} ${isAuto ? 'auto' : isManual ? 'manual' : ''}`}
-                id={`msg-item-${msg.id}`}
-              >
-                <span className="message-sender-name">
-                  {isInbound
-                    ? conversation.userName || 'Customer'
-                    : isAuto
-                    ? '🤖 Auto-Reply Bot'
-                    : 'Page Admin (You)'}
-                </span>
+              return (
+                <div
+                  key={msg.id}
+                  className={`message-row ${isInbound ? 'inbound' : 'outbound'} ${isAuto ? 'auto' : isManual ? 'manual' : ''} ${isPending ? 'pending-msg' : ''}`}
+                  id={`msg-item-${msg.id}`}
+                >
+                  <span className="message-sender-name">
+                    {isInbound
+                      ? conversation.userName || 'Customer'
+                      : isAuto
+                      ? '🤖 Auto-Reply Bot'
+                      : 'Page Admin (You)'}
+                  </span>
 
-                <div className="message-bubble">
-                  {isAuto && (
-                    <div className="auto-badge-indicator">
-                      <Sparkles size={11} />
-                      <span>Keyword Auto-Reply</span>
-                    </div>
-                  )}
+                  <div className={`message-bubble ${isPending ? 'pending' : ''}`}>
+                    {isAuto && (
+                      <div className="auto-badge-indicator">
+                        <Sparkles size={11} />
+                        <span>Keyword Auto-Reply</span>
+                      </div>
+                    )}
 
-                  {/* Render media attachments if present */}
-                  {attachments.map((att, idx) => {
-                    const isVideo = att.type === 'video' || att.url?.match(/\.(mp4|mov|webm)$/i);
-                    const isImage = att.type === 'image' || att.url?.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+                    {/* Render media attachments if present */}
+                    {attachments.map((att, idx) => {
+                      const isVideo = att.type === 'video' || att.url?.match(/\.(mp4|mov|webm)$/i);
+                      const isImage = att.type === 'image' || att.url?.match(/\.(jpg|jpeg|png|gif|webp)$/i);
 
-                    if (isVideo) {
-                      return (
-                        <div key={idx} className="media-attachment-container video-box">
-                          <video controls className="chat-media-video" src={att.url} preload="metadata" />
-                        </div>
-                      );
-                    }
-
-                    if (isImage || att.url) {
-                      return (
-                        <div
-                          key={idx}
-                          className="media-attachment-container image-box"
-                          onClick={() => setLightboxImage(att.url)}
-                          title="Click to view full size"
-                        >
-                          <img src={att.url} alt={att.title || 'Attachment'} className="chat-media-image" />
-                          <div className="image-zoom-overlay">
-                            <Maximize2 size={16} />
+                      if (isVideo) {
+                        return (
+                          <div key={idx} className="media-attachment-container video-box">
+                            <video controls className="chat-media-video" src={att.url} preload="metadata" />
                           </div>
-                        </div>
-                      );
-                    }
+                        );
+                      }
 
-                    return null;
-                  })}
+                      if (isImage || att.url) {
+                        return (
+                          <div
+                            key={idx}
+                            className="media-attachment-container image-box"
+                            onClick={() => setLightboxImage(att.url)}
+                            title="Click to view full size"
+                          >
+                            <img src={att.url} alt={att.title || 'Attachment'} className="chat-media-image" />
+                            <div className="image-zoom-overlay">
+                              <Maximize2 size={16} />
+                            </div>
+                          </div>
+                        );
+                      }
 
-                  {/* Message text */}
-                  {msg.text && (
-                    <div className="message-text-content">{msg.text}</div>
-                  )}
+                      return null;
+                    })}
+
+                    {/* Message text */}
+                    {msg.text && (
+                      <div className="message-text-content">{msg.text}</div>
+                    )}
+                  </div>
+
+                  <div className="message-meta">
+                    <span>{formatMessageTime(msg.createdAt)}</span>
+                    {!isInbound && (
+                      <>
+                        {isPending ? (
+                          <span className="pending-status" title="Sending...">
+                            <Clock size={11} className="spin-slow" />
+                          </span>
+                        ) : isSeen ? (
+                          <span className="seen-receipt" title="Seen by customer">
+                            <CheckCheck size={13} color="var(--accent-primary)" />
+                            <span className="seen-text">Seen</span>
+                          </span>
+                        ) : (
+                          <span title="Sent">
+                            <Check size={12} color="var(--accent-success)" />
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
+              );
+            })}
 
-                <div className="message-meta">
-                  <span>{formatMessageTime(msg.createdAt)}</span>
-                  {!isInbound && <Check size={12} color="var(--accent-success)" />}
+            {/* Live Typing Indicator Animation */}
+            {conversation.isTyping && (
+              <div className="message-row inbound typing-row">
+                <span className="message-sender-name">
+                  {conversation.userName || 'Customer'}
+                </span>
+                <div className="message-bubble typing-bubble">
+                  <div className="typing-dots">
+                    <span className="dot dot-1" />
+                    <span className="dot dot-2" />
+                    <span className="dot dot-3" />
+                  </div>
+                  <span className="typing-text">typing...</span>
                 </div>
               </div>
-            );
-          })
+            )}
+          </>
         )}
         <div ref={messagesEndRef} />
       </div>

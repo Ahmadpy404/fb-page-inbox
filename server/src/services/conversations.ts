@@ -7,6 +7,8 @@ import {
   emitNewReply,
   emitConversationUpdated,
   emitSyncStatus,
+  emitMessageRead,
+  emitTypingStatus,
 } from '../socket';
 
 /**
@@ -71,6 +73,40 @@ export async function getOrCreateConversation(
  */
 export async function ingestWebhookEvent(event: ParsedWebhookEvent) {
   const { pageId: fbPageId, userPsid, text, isEcho, fbMessageId, timestamp, attachments } = event;
+
+  // Handle customer Read Receipts (Seen watermark)
+  if (event.type === 'read') {
+    const conversation = await prisma.conversation.findUnique({
+      where: { psid: userPsid },
+    });
+    if (conversation) {
+      const watermark = event.watermark || Date.now();
+      const readAtStr = (event.timestamp || new Date(watermark)).toISOString();
+      console.log(`[Conversations] Read receipt received for conversation ${conversation.id} (watermark: ${watermark})`);
+      emitMessageRead({
+        conversationId: conversation.id,
+        watermark,
+        readAt: readAtStr,
+      });
+    }
+    return { conversation, read: true };
+  }
+
+  // Handle typing_on / typing_off
+  if (event.type === 'typing_on' || event.type === 'typing_off') {
+    const conversation = await prisma.conversation.findUnique({
+      where: { psid: userPsid },
+    });
+    if (conversation) {
+      const isTyping = event.type === 'typing_on';
+      console.log(`[Conversations] Typing status for ${conversation.userName || userPsid}: ${isTyping}`);
+      emitTypingStatus({
+        conversationId: conversation.id,
+        isTyping,
+      });
+    }
+    return { conversation, typing: true };
+  }
 
   // 1. Check for deduplication if fbMessageId exists
   if (fbMessageId) {
@@ -471,8 +507,8 @@ export async function backfillFromGraphApi(
         message: `Syncing ${total} updated conversation(s) for "${page.name}"...`,
       });
 
-      // Process in parallel batches of 4
-      const BATCH_SIZE = 4;
+      // Process in parallel batches of 10 for super fast syncing
+      const BATCH_SIZE = 10;
       for (let i = 0; i < threadsToSync.length; i += BATCH_SIZE) {
         const chunk = threadsToSync.slice(i, i + BATCH_SIZE);
 

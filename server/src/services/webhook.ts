@@ -11,15 +11,16 @@ export interface WebhookMessageAttachment {
 }
 
 export interface ParsedWebhookEvent {
-  type: 'message' | 'message_echo' | 'unknown';
+  type: 'message' | 'message_echo' | 'read' | 'typing_on' | 'typing_off' | 'unknown';
   pageId: string;
   userPsid: string;
   senderId: string;
   recipientId: string;
   timestamp: Date;
   fbMessageId?: string;
-  text: string;
-  isEcho: boolean;
+  text?: string;
+  isEcho?: boolean;
+  watermark?: number;
   attachments?: WebhookMessageAttachment[];
   appId?: number;
   metadata?: string;
@@ -69,7 +70,7 @@ export function verifySignature(
 
 /**
  * Parses Meta's Messenger webhook payload array into structured events.
- * Supports: entry.messaging, entry.standby, entry.changes, postbacks, and echoes.
+ * Supports: entry.messaging, entry.standby, entry.changes, postbacks, echoes, reads, and typing indicators.
  */
 export function parseWebhookPayload(payload: any): ParsedWebhookEvent[] {
   if (!payload || !Array.isArray(payload.entry)) {
@@ -102,8 +103,41 @@ export function parseWebhookPayload(payload: any): ParsedWebhookEvent[] {
       const recipientId = messagingEvent.recipient?.id;
       const timestamp = messagingEvent.timestamp ? new Date(messagingEvent.timestamp) : new Date();
 
-      // Handle standard message or echo
-      if (messagingEvent.message) {
+      // 1. Read receipt watermark (Customer opened/read the message)
+      if (messagingEvent.read) {
+        const readWatermark = messagingEvent.read.watermark || Date.now();
+        const userPsid = senderId !== pageId ? senderId : recipientId;
+        if (userPsid) {
+          parsedEvents.push({
+            type: 'read',
+            pageId,
+            userPsid,
+            senderId: senderId || userPsid,
+            recipientId: recipientId || pageId,
+            timestamp: new Date(readWatermark),
+            watermark: readWatermark,
+            rawEvent: messagingEvent,
+          });
+        }
+      }
+      // 2. Typing status (typing_on / typing_off)
+      else if (messagingEvent.sender_action) {
+        const action = messagingEvent.sender_action;
+        const userPsid = senderId !== pageId ? senderId : recipientId;
+        if (userPsid && (action === 'typing_on' || action === 'typing_off')) {
+          parsedEvents.push({
+            type: action as 'typing_on' | 'typing_off',
+            pageId,
+            userPsid,
+            senderId: senderId || userPsid,
+            recipientId: recipientId || pageId,
+            timestamp,
+            rawEvent: messagingEvent,
+          });
+        }
+      }
+      // 3. Standard message or echo
+      else if (messagingEvent.message) {
         const msg = messagingEvent.message;
         const isEcho = Boolean(msg.is_echo);
         const fbMessageId = msg.mid;
@@ -134,7 +168,7 @@ export function parseWebhookPayload(payload: any): ParsedWebhookEvent[] {
           });
         }
       }
-      // Handle postback (button clicks / Get Started)
+      // 4. Postback (button clicks / Get Started)
       else if (messagingEvent.postback) {
         const postback = messagingEvent.postback;
         const fbMessageId = postback.mid || `postback.${Date.now()}`;

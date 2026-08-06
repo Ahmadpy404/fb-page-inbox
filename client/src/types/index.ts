@@ -16,6 +16,9 @@ export interface Message {
   attachments?: string | null;
   createdAt: string;
   fbMessageId?: string | null;
+  isPending?: boolean;
+  status?: 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
+  readAt?: string | null;
 }
 
 export interface PageData {
@@ -46,6 +49,8 @@ export interface Conversation {
   } | null;
   createdAt: string;
   lastMessage?: Message | null;
+  readWatermark?: number;
+  isTyping?: boolean;
 }
 
 export interface Rule {

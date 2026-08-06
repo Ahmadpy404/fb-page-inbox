@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { ConversationList } from './components/Inbox/ConversationList';
 import { ChatWindow } from './components/Inbox/ChatWindow';
@@ -6,6 +6,7 @@ import { RulesManager } from './components/Rules/RulesManager';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { AddPageModal } from './components/Pages/AddPageModal';
 import { LoginModal } from './components/Auth/LoginModal';
+import { ToastAlert } from './components/Notification/ToastAlert';
 import {
   fetchConversations,
   fetchConversationMessages,
@@ -31,6 +32,8 @@ import { getSocket, subscribeToRealtimeEvents, refreshSocketAuth } from './servi
 import { Conversation, Message, Rule, SettingsData, SyncStatus, PageData } from './types';
 
 const VAULT_KEY = 'fb_inbox_pages_vault';
+const EMBEDDED_NOTIFICATION_ICON =
+  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="%230084ff"/><path d="M28 50 C28 36 38 26 50 26 C62 26 72 36 72 50 C72 64 62 74 50 74 C45 74 41 73 37 71 L26 75 L30 63 C29 59 28 55 28 50 Z" fill="white"/></svg>';
 
 function deduplicateMessages(list: Message[]): Message[] {
   const seenIds = new Set<string>();
@@ -122,7 +125,7 @@ function showBrowserNotification(userName: string, text: string, pageName?: stri
       const body = text && text.trim() ? text : 'Sent a photo, video, or attachment.';
       const notification = new Notification(title, {
         body,
-        icon: '/favicon.svg',
+        icon: EMBEDDED_NOTIFICATION_ICON,
         tag: 'fb-chat-alert',
         silent: false,
       });
@@ -160,6 +163,12 @@ export const App: React.FC = () => {
   const [socketConnected, setSocketConnected] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [hasAutoSynced, setHasAutoSynced] = useState(false);
+  const [mobileView, setMobileView] = useState<'list' | 'chat'>('list');
+
+  // Client-side cache for instant switching between chats (0ms delay)
+  const messageCacheRef = useRef<Map<string, Message[]>>(new Map());
+  const typingTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+
   const [hudToast, setHudToast] = useState<{
     title: string;
     body: string;
@@ -397,7 +406,7 @@ export const App: React.FC = () => {
     };
   }, [isAuthenticated, loadConversations, loadPages]);
 
-  // 2. Fetch Messages when selected conversation changes
+  // 2. Instant cache-assisted message loader (0ms switching)
   useEffect(() => {
     if (!isAuthenticated || !selectedConversationId) {
       setMessages([]);
@@ -405,12 +414,21 @@ export const App: React.FC = () => {
     }
 
     let isCurrent = true;
-    setLoadingMessages(true);
+
+    // Check cache first for 0ms transition
+    if (messageCacheRef.current.has(selectedConversationId)) {
+      setMessages(messageCacheRef.current.get(selectedConversationId)!);
+      setLoadingMessages(false);
+    } else {
+      setLoadingMessages(true);
+    }
 
     fetchConversationMessages(selectedConversationId)
       .then((data) => {
         if (isCurrent) {
-          setMessages(deduplicateMessages(data.messages));
+          const deduped = deduplicateMessages(data.messages);
+          setMessages(deduped);
+          messageCacheRef.current.set(selectedConversationId, deduped);
         }
       })
       .catch((err) => console.error('Failed to fetch messages:', err))
@@ -460,6 +478,7 @@ export const App: React.FC = () => {
           const updatedConv = {
             ...conversation,
             lastMessage: message,
+            isTyping: false,
           };
           if (index >= 0) {
             const copy = [...prev];
@@ -470,10 +489,14 @@ export const App: React.FC = () => {
           }
         });
 
-        // If message belongs to active thread, append it
+        // Update message thread and cache
         setSelectedConversationId((currentId) => {
           if (currentId === conversation.id) {
-            setMessages((prev) => deduplicateMessages([...prev, message]));
+            setMessages((prev) => {
+              const deduped = deduplicateMessages([...prev, message]);
+              messageCacheRef.current.set(conversation.id, deduped);
+              return deduped;
+            });
           }
           return currentId;
         });
@@ -495,7 +518,11 @@ export const App: React.FC = () => {
 
         setSelectedConversationId((currentId) => {
           if (currentId === conversationId) {
-            setMessages((prev) => deduplicateMessages([...prev, message]));
+            setMessages((prev) => {
+              const deduped = deduplicateMessages([...prev, message]);
+              messageCacheRef.current.set(conversationId, deduped);
+              return deduped;
+            });
           }
           return currentId;
         });
@@ -505,6 +532,31 @@ export const App: React.FC = () => {
         setConversations((prev) =>
           prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c))
         );
+      },
+
+      onMessageRead: ({ conversationId, watermark }) => {
+        console.log(`[Socket] Read receipt: conv ${conversationId} watermark ${watermark}`);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === conversationId ? { ...c, readWatermark: watermark } : c))
+        );
+      },
+
+      onTypingStatus: ({ conversationId, isTyping }) => {
+        setConversations((prev) =>
+          prev.map((c) => (c.id === conversationId ? { ...c, isTyping } : c))
+        );
+
+        if (isTyping) {
+          if (typingTimeoutsRef.current.has(conversationId)) {
+            clearTimeout(typingTimeoutsRef.current.get(conversationId)!);
+          }
+          const timeout = setTimeout(() => {
+            setConversations((prev) =>
+              prev.map((c) => (c.id === conversationId ? { ...c, isTyping: false } : c))
+            );
+          }, 6000);
+          typingTimeoutsRef.current.set(conversationId, timeout);
+        }
       },
 
       onSyncStatus: (status) => {
@@ -537,10 +589,76 @@ export const App: React.FC = () => {
     }
   };
 
+  // Instant 0ms Optimistic Outbound Messaging
   const handleSendReply = async (text?: string, mediaFile?: File) => {
     if (!selectedConversationId) return;
-    const result = await sendReply(selectedConversationId, text, mediaFile);
-    setMessages((prev) => deduplicateMessages([...prev, result.message]));
+
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const nowIso = new Date().toISOString();
+    const optimisticMsg: Message = {
+      id: tempId,
+      conversationId: selectedConversationId,
+      direction: 'outbound_manual',
+      text: text || (mediaFile ? `[Uploading ${mediaFile.name}...]` : ''),
+      createdAt: nowIso,
+      isPending: true,
+      status: 'sending',
+    };
+
+    // 1. Instantly append to active chat (0ms feedback)
+    setMessages((prev) => [...prev, optimisticMsg]);
+
+    // 2. Instantly update sidebar snippet & elevate conversation
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c.id === selectedConversationId);
+      if (idx >= 0) {
+        const updated = {
+          ...prev[idx],
+          lastMessage: optimisticMsg,
+          lastMessageAt: nowIso,
+        };
+        const copy = [...prev];
+        copy.splice(idx, 1);
+        return [updated, ...copy];
+      }
+      return prev;
+    });
+
+    try {
+      const result = await sendReply(selectedConversationId, text, mediaFile);
+
+      // 3. Confirm message
+      setMessages((prev) => {
+        const deduped = deduplicateMessages(
+          prev.map((m) => (m.id === tempId ? { ...result.message, isPending: false, status: 'sent' } : m))
+        );
+        messageCacheRef.current.set(selectedConversationId, deduped);
+        return deduped;
+      });
+
+      // Update sidebar
+      setConversations((prev) => {
+        const idx = prev.findIndex((c) => c.id === selectedConversationId);
+        if (idx >= 0) {
+          const updated = {
+            ...prev[idx],
+            lastMessage: result.message,
+            lastMessageAt: result.message.createdAt,
+          };
+          const copy = [...prev];
+          copy.splice(idx, 1);
+          return [updated, ...copy];
+        }
+        return prev;
+      });
+    } catch (err) {
+      console.error('Failed to send reply:', err);
+      // Mark as failed
+      setMessages((prev) =>
+        prev.map((m) => (m.id === tempId ? { ...m, isPending: false, status: 'failed' } : m))
+      );
+      throw err;
+    }
   };
 
   const handleToggleAutoReply = async (enabled?: boolean) => {
@@ -565,7 +683,7 @@ export const App: React.FC = () => {
     setRules((prev) => [...prev, created].sort((a, b) => a.priority - b.priority));
   };
 
-  const handleUpdateRule = async (id: string, updates: Partial<Rule>) => {
+  const handleUpdateRule = async (id: string, updates: any) => {
     const updated = await updateRule(id, updates);
     setRules((prev) => prev.map((r) => (r.id === id ? updated : r)));
   };
@@ -575,14 +693,14 @@ export const App: React.FC = () => {
     setRules((prev) => prev.filter((r) => r.id !== id));
   };
 
-  const handleReorderRules = async (ruleIds: string[]) => {
-    const reordered = await reorderRules(ruleIds);
-    setRules(reordered);
+  const handleReorderRules = async (orderedIds: string[]) => {
+    const updated = await reorderRules(orderedIds);
+    setRules(updated);
   };
 
   const handleUpdateGlobalAutoReply = async (enabled: boolean) => {
-    const newVal = await updateGlobalAutoReply(enabled);
-    setSettings((prev) => (prev ? { ...prev, globalAutoReply: newVal } : null));
+    const result = await updateGlobalAutoReply(enabled);
+    setSettings((prev) => (prev ? { ...prev, globalAutoReply: result } : null));
   };
 
   const handleVerifyFacebook = async () => {
@@ -607,25 +725,31 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleDeletePage = async (pageDbId: string) => {
+  const handleDeletePage = async (id: string) => {
+    const targetPage = pages.find((p) => p.id === id);
+    await deletePage(id);
+
+    // Remove from local storage vault
     try {
-      await deletePage(pageDbId);
-      await loadPages();
-      if (selectedPageId === pageDbId) {
-        setSelectedPageId('all');
+      const stored = localStorage.getItem(VAULT_KEY);
+      if (stored && targetPage) {
+        const vaultList = JSON.parse(stored);
+        const filtered = vaultList.filter((v: any) => v.pageId !== targetPage.pageId);
+        localStorage.setItem(VAULT_KEY, JSON.stringify(filtered));
       }
-      await loadConversations();
-    } catch (err: any) {
-      alert(`Failed to remove page: ${err.message || err}`);
-    }
+    } catch {}
+
+    await loadPages();
+    if (selectedPageId === id) setSelectedPageId('all');
   };
 
   if (isAuthChecking) {
     return (
-      <div className="auth-splash-screen">
-        <div className="spinner-glow" />
-        <h2>Facebook Page Unified Inbox</h2>
-        <p>Securing connection...</p>
+      <div className="app-container loading-center">
+        <div className="skeleton-spinner" />
+        <p style={{ marginTop: '16px', color: 'var(--text-secondary)' }}>
+          Authenticating secure Facebook Inbox workspace...
+        </p>
       </div>
     );
   }
@@ -641,13 +765,19 @@ export const App: React.FC = () => {
     <div className="app-container">
       <Navbar
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={(tab) => {
+          setActiveTab(tab);
+          if (tab === 'inbox') setMobileView('list');
+        }}
         socketConnected={socketConnected}
         facebookStatus={settings?.facebookStatus}
         syncStatus={syncStatus}
         pages={pages}
         selectedPageId={selectedPageId}
-        onSelectPage={(pageId) => setSelectedPageId(pageId)}
+        onSelectPage={(pageId) => {
+          setSelectedPageId(pageId);
+          setMobileView('list');
+        }}
         onOpenAddModal={() => setIsAddPageModalOpen(true)}
         onTriggerSync={handleTriggerSync}
         adminUser={adminUser}
@@ -656,22 +786,31 @@ export const App: React.FC = () => {
 
       <div className="main-content">
         {activeTab === 'inbox' && (
-          <div className="inbox-layout">
-            <ConversationList
-              conversations={conversations}
-              selectedConversationId={selectedConversationId}
-              onSelectConversation={setSelectedConversationId}
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-            />
-            <ChatWindow
-              conversation={selectedConversation}
-              messages={messages}
-              loading={loadingMessages}
-              onSendReply={handleSendReply}
-              onToggleAutoReply={handleToggleAutoReply}
-              onMarkAsRead={handleMarkAsRead}
-            />
+          <div className={`inbox-layout mobile-view-${mobileView}`}>
+            <div className={`inbox-col-sidebar ${mobileView === 'chat' ? 'mobile-hidden' : ''}`}>
+              <ConversationList
+                conversations={conversations}
+                selectedConversationId={selectedConversationId}
+                onSelectConversation={(id) => {
+                  setSelectedConversationId(id);
+                  setMobileView('chat');
+                }}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+              />
+            </div>
+
+            <div className={`inbox-col-chat ${mobileView === 'list' ? 'mobile-hidden' : ''}`}>
+              <ChatWindow
+                conversation={selectedConversation}
+                messages={messages}
+                loading={loadingMessages}
+                onSendReply={handleSendReply}
+                onToggleAutoReply={handleToggleAutoReply}
+                onMarkAsRead={handleMarkAsRead}
+                onBackToMobileList={() => setMobileView('list')}
+              />
+            </div>
           </div>
         )}
 
@@ -716,26 +855,21 @@ export const App: React.FC = () => {
         }}
       />
 
-      {/* In-App Message Alert Toast */}
+      {/* Floating Glassmorphic Toast Alert for incoming messages */}
       {hudToast && (
-        <div
-          className="hud-toast-alert"
-          onClick={() => {
-            setSelectedConversationId(hudToast.convId);
+        <ToastAlert
+          title={hudToast.title}
+          body={hudToast.body}
+          pageName={hudToast.pageName}
+          convId={hudToast.convId}
+          onOpen={(convId) => {
+            setSelectedConversationId(convId);
             setActiveTab('inbox');
+            setMobileView('chat');
             setHudToast(null);
           }}
-          title="Click to open conversation"
-        >
-          <div className="hud-toast-header">
-            <span className="hud-toast-tag">💬 NEW MESSAGE</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: 'var(--text-muted)' }}>
-              {hudToast.pageName || 'Messenger'}
-            </span>
-          </div>
-          <div className="hud-toast-sender">{hudToast.title}</div>
-          <div className="hud-toast-body">{hudToast.body}</div>
-        </div>
+          onClose={() => setHudToast(null)}
+        />
       )}
     </div>
   );
