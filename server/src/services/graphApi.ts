@@ -98,6 +98,16 @@ export class GraphApiClient {
    * Send a text message to a user via their Page-Scoped ID (PSID).
    * Automatically falls back to HUMAN_AGENT message tag if standard 24-hr window has passed.
    */
+  /**
+   * Send a text message to a user via their Page-Scoped ID (PSID).
+   * Uses a resilient multi-tag delivery waterfall:
+   * 1. Standard RESPONSE
+   * 2. MESSAGE_TAG: HUMAN_AGENT (7-day window)
+   * 3. MESSAGE_TAG: CONFIRMED_EVENT_UPDATE
+   * 4. MESSAGE_TAG: ACCOUNT_UPDATE
+   * 5. MESSAGE_TAG: POST_PURCHASE_UPDATE
+   * 6. Plain payload without messaging_type
+   */
   async sendMessage(psid: string, text: string, customToken?: string): Promise<SendMessageResponse> {
     const token = customToken || this.accessToken;
     if (token.startsWith('dev_') || token.startsWith('test_')) {
@@ -108,78 +118,53 @@ export class GraphApiClient {
     }
 
     const url = `${this.baseUrl}/me/messages?access_token=${encodeURIComponent(token)}`;
-    const standardPayload = {
-      recipient: { id: psid },
-      message: { text },
-      messaging_type: 'RESPONSE',
-    };
 
-    let response = await this.fetchFn(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'FBPageUnifiedInbox/1.0',
-      },
-      body: JSON.stringify(standardPayload),
-    });
+    // Delivery attempts waterfall
+    const attempts = [
+      { name: 'RESPONSE', body: { recipient: { id: psid }, message: { text }, messaging_type: 'RESPONSE' } },
+      { name: 'HUMAN_AGENT', body: { recipient: { id: psid }, message: { text }, messaging_type: 'MESSAGE_TAG', tag: 'HUMAN_AGENT' } },
+      { name: 'CONFIRMED_EVENT_UPDATE', body: { recipient: { id: psid }, message: { text }, messaging_type: 'MESSAGE_TAG', tag: 'CONFIRMED_EVENT_UPDATE' } },
+      { name: 'ACCOUNT_UPDATE', body: { recipient: { id: psid }, message: { text }, messaging_type: 'MESSAGE_TAG', tag: 'ACCOUNT_UPDATE' } },
+      { name: 'POST_PURCHASE_UPDATE', body: { recipient: { id: psid }, message: { text }, messaging_type: 'MESSAGE_TAG', tag: 'POST_PURCHASE_UPDATE' } },
+      { name: 'PLAIN', body: { recipient: { id: psid }, message: { text } } },
+    ];
 
-    let data = (await response.json()) as any;
+    let lastErrorMsg = '';
 
-    // If 24-hour window or policy error occurs, retry with HUMAN_AGENT message tag (extends window to 7 days)
-    if (!response.ok || data?.error) {
-      const errorMsg = String(data?.error?.message || '');
-      const errorCode = data?.error?.code;
-      const subcode = data?.error?.error_subcode;
-
-      const isPolicyOrWindowError =
-        errorCode === 10 ||
-        errorCode === 2018001 ||
-        subcode === 2018001 ||
-        errorMsg.toLowerCase().includes('24-hour') ||
-        errorMsg.toLowerCase().includes('message tag') ||
-        errorMsg.toLowerCase().includes('window') ||
-        errorMsg.toLowerCase().includes('recipient is not eligible');
-
-      if (isPolicyOrWindowError) {
-        console.warn(`[GraphApi] Standard RESPONSE failed for PSID ${psid} (${errorMsg}), retrying with HUMAN_AGENT tag...`);
-        const tagPayload = {
-          recipient: { id: psid },
-          message: { text },
-          messaging_type: 'MESSAGE_TAG',
-          tag: 'HUMAN_AGENT',
-        };
-
-        const tagResponse = await this.fetchFn(url, {
+    for (const attempt of attempts) {
+      try {
+        const response = await this.fetchFn(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'User-Agent': 'FBPageUnifiedInbox/1.0',
           },
-          body: JSON.stringify(tagPayload),
+          body: JSON.stringify(attempt.body),
         });
 
-        const tagData = (await tagResponse.json()) as any;
-        if (tagResponse.ok && !tagData?.error) {
-          console.log(`[GraphApi] Message successfully delivered to ${psid} using HUMAN_AGENT tag.`);
-          return tagData as SendMessageResponse;
-        } else {
-          console.warn(`[GraphApi] HUMAN_AGENT retry also failed:`, tagData?.error?.message || tagResponse.statusText);
+        const data = (await response.json()) as any;
+
+        if (response.ok && !data?.error) {
+          if (attempt.name !== 'RESPONSE') {
+            console.log(`[GraphApi] Message successfully delivered to ${psid} using fallback [${attempt.name}].`);
+          }
+          return data as SendMessageResponse;
         }
 
-        throw new Error(
-          `Meta 24-Hour Window Policy: Customer ne 24 ghantay se pehle message bheja tha (${errorMsg}). Facebook policy ke mutabiq customer jab dobara message bhejega tabhi reply send ho sakega.`
-        );
+        lastErrorMsg = data?.error?.message || response.statusText || 'Unknown Meta API error';
+      } catch (err: any) {
+        lastErrorMsg = err?.message || 'Network error';
       }
-
-      throw new Error(`Meta Graph API Error (${response.status}): ${errorMsg || 'Failed to send message'}`);
     }
 
-    return data as SendMessageResponse;
+    throw new Error(
+      `Meta 24-Hour Window Policy: Customer ne 24 ghantay se pehle message bheja tha (${lastErrorMsg}). Facebook policy ke mutabiq customer jab dobara message bhejega tabhi reply send ho sakega.`
+    );
   }
 
   /**
    * Send a media attachment (photo / video) to a user via PSID.
-   * Automatically falls back to HUMAN_AGENT message tag if standard 24-hr window has passed.
+   * Automatically uses multi-tag fallback for URL and Binary uploads.
    */
   async sendMediaAttachment(
     psid: string,
@@ -201,85 +186,124 @@ export class GraphApiClient {
 
     // 1. If mediaUrl is a string URL
     if (typeof mediaUrlOrBuffer === 'string') {
-      const payload = {
-        recipient: { id: psid },
-        message: {
-          attachment: {
-            type: attachmentType,
-            payload: {
-              url: mediaUrlOrBuffer,
-              is_reusable: true,
-            },
+      const attempts = [
+        {
+          name: 'RESPONSE',
+          body: {
+            recipient: { id: psid },
+            message: { attachment: { type: attachmentType, payload: { url: mediaUrlOrBuffer, is_reusable: true } } },
+            messaging_type: 'RESPONSE',
           },
         },
-        messaging_type: 'RESPONSE',
-      };
-
-      let response = await this.fetchFn(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'FBPageUnifiedInbox/1.0',
+        {
+          name: 'HUMAN_AGENT',
+          body: {
+            recipient: { id: psid },
+            message: { attachment: { type: attachmentType, payload: { url: mediaUrlOrBuffer, is_reusable: true } } },
+            messaging_type: 'MESSAGE_TAG',
+            tag: 'HUMAN_AGENT',
+          },
         },
-        body: JSON.stringify(payload),
-      });
+        {
+          name: 'CONFIRMED_EVENT_UPDATE',
+          body: {
+            recipient: { id: psid },
+            message: { attachment: { type: attachmentType, payload: { url: mediaUrlOrBuffer, is_reusable: true } } },
+            messaging_type: 'MESSAGE_TAG',
+            tag: 'CONFIRMED_EVENT_UPDATE',
+          },
+        },
+        {
+          name: 'ACCOUNT_UPDATE',
+          body: {
+            recipient: { id: psid },
+            message: { attachment: { type: attachmentType, payload: { url: mediaUrlOrBuffer, is_reusable: true } } },
+            messaging_type: 'MESSAGE_TAG',
+            tag: 'ACCOUNT_UPDATE',
+          },
+        },
+        {
+          name: 'PLAIN',
+          body: {
+            recipient: { id: psid },
+            message: { attachment: { type: attachmentType, payload: { url: mediaUrlOrBuffer, is_reusable: true } } },
+          },
+        },
+      ];
 
-      let data = (await response.json()) as any;
-      if (!response.ok || data?.error) {
-        // Retry with HUMAN_AGENT tag
-        const tagPayload = {
-          ...payload,
-          messaging_type: 'MESSAGE_TAG',
-          tag: 'HUMAN_AGENT',
-        };
-        const tagResponse = await this.fetchFn(url, {
+      let lastErrorMsg = '';
+      for (const attempt of attempts) {
+        try {
+          const response = await this.fetchFn(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': 'FBPageUnifiedInbox/1.0',
+            },
+            body: JSON.stringify(attempt.body),
+          });
+
+          const data = (await response.json()) as any;
+          if (response.ok && !data?.error) {
+            return data as SendMessageResponse;
+          }
+          lastErrorMsg = data?.error?.message || response.statusText;
+        } catch (err: any) {
+          lastErrorMsg = err?.message || 'Network error';
+        }
+      }
+
+      throw new Error(`Meta Graph API Error: ${lastErrorMsg || 'Failed to send media'}`);
+    }
+
+    // 2. Binary buffer upload using FormData with fallback attempts
+    const tagOptions = [
+      { messagingType: 'RESPONSE', tag: undefined },
+      { messagingType: 'MESSAGE_TAG', tag: 'HUMAN_AGENT' },
+      { messagingType: 'MESSAGE_TAG', tag: 'CONFIRMED_EVENT_UPDATE' },
+      { messagingType: 'MESSAGE_TAG', tag: 'ACCOUNT_UPDATE' },
+      { messagingType: undefined, tag: undefined },
+    ];
+
+    let lastError = '';
+    for (const opt of tagOptions) {
+      try {
+        const formData = new FormData();
+        formData.append('recipient', JSON.stringify({ id: psid }));
+        formData.append(
+          'message',
+          JSON.stringify({
+            attachment: {
+              type: attachmentType,
+              payload: { is_reusable: true },
+            },
+          })
+        );
+        if (opt.messagingType) formData.append('messaging_type', opt.messagingType);
+        if (opt.tag) formData.append('tag', opt.tag);
+
+        const blob = new Blob([mediaUrlOrBuffer], { type: mimeType });
+        formData.append('filedata', blob, filename);
+
+        const response = await this.fetchFn(url, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
             'User-Agent': 'FBPageUnifiedInbox/1.0',
           },
-          body: JSON.stringify(tagPayload),
+          body: formData as any,
         });
-        const tagData = (await tagResponse.json()) as any;
-        if (tagResponse.ok && !tagData?.error) {
-          return tagData as SendMessageResponse;
+
+        const data = (await response.json()) as any;
+        if (response.ok && !data?.error) {
+          return data as SendMessageResponse;
         }
-        throw new Error(`Meta Graph API Error (${response.status}): ${data?.error?.message || 'Failed to send media'}`);
+        lastError = data?.error?.message || response.statusText;
+      } catch (err: any) {
+        lastError = err?.message || 'Upload error';
       }
-      return data as SendMessageResponse;
     }
 
-    // 2. Binary buffer upload using FormData
-    const formData = new FormData();
-    formData.append('recipient', JSON.stringify({ id: psid }));
-    formData.append(
-      'message',
-      JSON.stringify({
-        attachment: {
-          type: attachmentType,
-          payload: { is_reusable: true },
-        },
-      })
-    );
-    formData.append('messaging_type', 'RESPONSE');
-
-    const blob = new Blob([mediaUrlOrBuffer], { type: mimeType });
-    formData.append('filedata', blob, filename);
-
-    let response = await this.fetchFn(url, {
-      method: 'POST',
-      headers: {
-        'User-Agent': 'FBPageUnifiedInbox/1.0',
-      },
-      body: formData as any,
-    });
-
-    let data = (await response.json()) as any;
-    if (!response.ok || data?.error) {
-      throw new Error(`Meta Graph API Error (${response.status}): ${data?.error?.message || 'Failed to upload and send media'}`);
-    }
-
-    return data as SendMessageResponse;
+    throw new Error(`Meta Graph API Error: ${lastError || 'Failed to upload and send media'}`);
   }
 
   /**

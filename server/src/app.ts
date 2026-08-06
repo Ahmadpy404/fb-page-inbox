@@ -8,6 +8,7 @@ import rulesRoutes from './routes/rules';
 import settingsRoutes from './routes/settings';
 import pagesRoutes from './routes/pages';
 import authRoutes from './routes/auth';
+import { broadcastRouter } from './routes/broadcast';
 import { requireAuth } from './middleware/auth';
 
 // Custom request interface with rawBody buffer
@@ -61,6 +62,7 @@ export function createApp(): express.Application {
   app.use('/api/rules', requireAuth, rulesRoutes);
   app.use('/api/settings', requireAuth, settingsRoutes);
   app.use('/api/pages', requireAuth, pagesRoutes);
+  app.use('/api/broadcast', requireAuth, broadcastRouter);
 
   // Serve static client assets if built in production
   const clientDistPath = path.resolve(__dirname, '../../client/dist');

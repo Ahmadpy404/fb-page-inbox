@@ -97,3 +97,26 @@ export interface SyncStatus {
   synced?: number;
   message?: string;
 }
+
+export interface BroadcastLogItem {
+  id: string;
+  conversationId: string;
+  psid: string;
+  userName: string;
+  status: 'pending' | 'success' | 'failed';
+  error?: string;
+  timestamp: string;
+}
+
+export interface BroadcastState {
+  jobId: string | null;
+  status: 'idle' | 'running' | 'completed' | 'cancelled';
+  total: number;
+  sent: number;
+  failed: number;
+  currentIndex: number;
+  currentRecipientName: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  logs: BroadcastLogItem[];
+}

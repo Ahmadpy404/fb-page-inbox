@@ -14,6 +14,7 @@ interface NavbarProps {
   onSelectPage: (pageId: string) => void;
   onOpenAddModal: () => void;
   onTriggerSync: () => void;
+  onOpenBroadcastModal: () => void;
   adminUser?: { username: string; role?: string } | null;
   onLogout: () => void;
 }
@@ -28,6 +29,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectPage,
   onOpenAddModal,
   onTriggerSync,
+  onOpenBroadcastModal,
   adminUser,
   onLogout,
 }) => {
@@ -98,6 +100,17 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className={`status-dot ${socketConnected ? 'online' : 'offline'}`} />
             <span className="status-label">{socketConnected ? 'Live' : 'Connecting'}</span>
           </div>
+
+          {/* Bulk Broadcast Action Button */}
+          <button
+            className="broadcast-nav-btn"
+            onClick={onOpenBroadcastModal}
+            title="Open Bulk Messaging Broadcast Studio"
+            id="btn-open-broadcast"
+          >
+            <span>📢</span>
+            <span className="broadcast-btn-text">Bulk Broadcast</span>
+          </button>
 
           <button
             className="sync-btn"

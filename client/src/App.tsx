@@ -5,6 +5,7 @@ import { ChatWindow } from './components/Inbox/ChatWindow';
 import { RulesManager } from './components/Rules/RulesManager';
 import { SettingsPanel } from './components/Settings/SettingsPanel';
 import { AddPageModal } from './components/Pages/AddPageModal';
+import { BulkBroadcastModal } from './components/Broadcast/BulkBroadcastModal';
 import { LoginModal } from './components/Auth/LoginModal';
 import { ToastAlert } from './components/Notification/ToastAlert';
 import {
@@ -154,6 +155,7 @@ export const App: React.FC = () => {
   const [pages, setPages] = useState<PageData[]>([]);
   const [selectedPageId, setSelectedPageId] = useState<string>('all');
   const [isAddPageModalOpen, setIsAddPageModalOpen] = useState(false);
+  const [isBroadcastModalOpen, setIsBroadcastModalOpen] = useState(false);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -791,6 +793,7 @@ export const App: React.FC = () => {
         }}
         onOpenAddModal={() => setIsAddPageModalOpen(true)}
         onTriggerSync={handleTriggerSync}
+        onOpenBroadcastModal={() => setIsBroadcastModalOpen(true)}
         adminUser={adminUser}
         onLogout={handleLogout}
       />
@@ -866,6 +869,14 @@ export const App: React.FC = () => {
             })
             .catch(() => {});
         }}
+      />
+
+      <BulkBroadcastModal
+        isOpen={isBroadcastModalOpen}
+        onClose={() => setIsBroadcastModalOpen(false)}
+        pages={pages}
+        selectedPageId={selectedPageId}
+        conversations={conversations}
       />
 
       {/* Floating Glassmorphic Toast Alert for incoming messages */}

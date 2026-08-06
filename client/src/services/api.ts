@@ -374,3 +374,39 @@ export async function subscribeWebhook(): Promise<{ success: boolean; message: s
   const data = await res.json();
   return data;
 }
+
+// -------------------------------------------------------------
+// Broadcast / Bulk Messaging APIs
+// -------------------------------------------------------------
+
+export async function fetchBroadcastStatus(): Promise<any> {
+  const res = await authFetch(`${API_BASE}/broadcast/status`);
+  if (!res.ok) throw new Error('Failed to fetch broadcast status');
+  return res.json();
+}
+
+export async function startBroadcast(formData: FormData): Promise<{ success: boolean; broadcast: any }> {
+  const token = localStorage.getItem('fb_inbox_token');
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${API_BASE}/broadcast/start`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to start broadcast' }));
+    throw new Error(err.error || 'Failed to start broadcast');
+  }
+  return res.json();
+}
+
+export async function cancelBroadcast(): Promise<{ success: boolean; message: string }> {
+  const res = await authFetch(`${API_BASE}/broadcast/cancel`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to cancel broadcast');
+  return res.json();
+}

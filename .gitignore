@@ -13,10 +13,14 @@ node_modules/
 # Databases
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite-journal
 server/prisma/*.db
 server/prisma/*.db-journal
+server/prisma/*.db-shm
+server/prisma/*.db-wal
 
 # Build outputs
 dist/
