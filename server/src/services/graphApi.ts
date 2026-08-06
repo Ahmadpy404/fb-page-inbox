@@ -95,7 +95,8 @@ export class GraphApiClient {
   }
 
   /**
-   * Send a text message to a user via their Page-Scoped ID (PSID)
+   * Send a text message to a user via their Page-Scoped ID (PSID).
+   * Automatically falls back to HUMAN_AGENT message tag if standard 24-hr window has passed.
    */
   async sendMessage(psid: string, text: string, customToken?: string): Promise<SendMessageResponse> {
     const token = customToken || this.accessToken;
@@ -107,33 +108,74 @@ export class GraphApiClient {
     }
 
     const url = `${this.baseUrl}/me/messages?access_token=${encodeURIComponent(token)}`;
-    const payload = {
+    const standardPayload = {
       recipient: { id: psid },
       message: { text },
       messaging_type: 'RESPONSE',
     };
 
-    const response = await this.fetchFn(url, {
+    let response = await this.fetchFn(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'FBPageUnifiedInbox/1.0',
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(standardPayload),
     });
 
-    const data = (await response.json()) as any;
+    let data = (await response.json()) as any;
 
+    // If 24-hour window or policy error occurs, retry with HUMAN_AGENT message tag (extends window to 7 days)
     if (!response.ok || data?.error) {
-      const errorMsg = data?.error?.message || response.statusText || 'Failed to send message';
-      throw new Error(`Meta Graph API Error (${response.status}): ${errorMsg}`);
+      const errorMsg = String(data?.error?.message || '');
+      const errorCode = data?.error?.code;
+      const subcode = data?.error?.error_subcode;
+
+      const isPolicyOrWindowError =
+        errorCode === 10 ||
+        errorCode === 2018001 ||
+        subcode === 2018001 ||
+        errorMsg.toLowerCase().includes('24-hour') ||
+        errorMsg.toLowerCase().includes('message tag') ||
+        errorMsg.toLowerCase().includes('window') ||
+        errorMsg.toLowerCase().includes('recipient is not eligible');
+
+      if (isPolicyOrWindowError) {
+        console.warn(`[GraphApi] Standard RESPONSE failed for PSID ${psid} (${errorMsg}), retrying with HUMAN_AGENT tag...`);
+        const tagPayload = {
+          recipient: { id: psid },
+          message: { text },
+          messaging_type: 'MESSAGE_TAG',
+          tag: 'HUMAN_AGENT',
+        };
+
+        const tagResponse = await this.fetchFn(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'FBPageUnifiedInbox/1.0',
+          },
+          body: JSON.stringify(tagPayload),
+        });
+
+        const tagData = (await tagResponse.json()) as any;
+        if (tagResponse.ok && !tagData?.error) {
+          console.log(`[GraphApi] Message successfully delivered to ${psid} using HUMAN_AGENT tag.`);
+          return tagData as SendMessageResponse;
+        } else {
+          console.warn(`[GraphApi] HUMAN_AGENT retry also failed:`, tagData?.error?.message || tagResponse.statusText);
+        }
+      }
+
+      throw new Error(`Meta Graph API Error (${response.status}): ${errorMsg || 'Failed to send message'}`);
     }
 
     return data as SendMessageResponse;
   }
 
   /**
-   * Send a media attachment (photo / video) to a user via PSID
+   * Send a media attachment (photo / video) to a user via PSID.
+   * Automatically falls back to HUMAN_AGENT message tag if standard 24-hr window has passed.
    */
   async sendMediaAttachment(
     psid: string,
@@ -169,7 +211,7 @@ export class GraphApiClient {
         messaging_type: 'RESPONSE',
       };
 
-      const response = await this.fetchFn(url, {
+      let response = await this.fetchFn(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -178,8 +220,26 @@ export class GraphApiClient {
         body: JSON.stringify(payload),
       });
 
-      const data = (await response.json()) as any;
+      let data = (await response.json()) as any;
       if (!response.ok || data?.error) {
+        // Retry with HUMAN_AGENT tag
+        const tagPayload = {
+          ...payload,
+          messaging_type: 'MESSAGE_TAG',
+          tag: 'HUMAN_AGENT',
+        };
+        const tagResponse = await this.fetchFn(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'FBPageUnifiedInbox/1.0',
+          },
+          body: JSON.stringify(tagPayload),
+        });
+        const tagData = (await tagResponse.json()) as any;
+        if (tagResponse.ok && !tagData?.error) {
+          return tagData as SendMessageResponse;
+        }
         throw new Error(`Meta Graph API Error (${response.status}): ${data?.error?.message || 'Failed to send media'}`);
       }
       return data as SendMessageResponse;
@@ -202,7 +262,7 @@ export class GraphApiClient {
     const blob = new Blob([mediaUrlOrBuffer], { type: mimeType });
     formData.append('filedata', blob, filename);
 
-    const response = await this.fetchFn(url, {
+    let response = await this.fetchFn(url, {
       method: 'POST',
       headers: {
         'User-Agent': 'FBPageUnifiedInbox/1.0',
@@ -210,7 +270,7 @@ export class GraphApiClient {
       body: formData as any,
     });
 
-    const data = (await response.json()) as any;
+    let data = (await response.json()) as any;
     if (!response.ok || data?.error) {
       throw new Error(`Meta Graph API Error (${response.status}): ${data?.error?.message || 'Failed to upload and send media'}`);
     }

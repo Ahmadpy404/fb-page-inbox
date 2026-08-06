@@ -190,6 +190,49 @@ export function parseWebhookPayload(payload: any): ParsedWebhookEvent[] {
           });
         }
       }
+      // 5. Ad Referral (Click-to-Messenger Ad referral event)
+      else if (messagingEvent.referral) {
+        const referral = messagingEvent.referral;
+        const fbMessageId = `ref.${Date.now()}`;
+        const refSource = referral.source || 'ADS';
+        const userPsid = senderId;
+
+        if (userPsid) {
+          parsedEvents.push({
+            type: 'message',
+            pageId,
+            userPsid,
+            senderId,
+            recipientId,
+            timestamp,
+            fbMessageId,
+            text: `[Ad Referral: ${refSource}]`,
+            isEcho: false,
+            rawEvent: messagingEvent,
+          });
+        }
+      }
+      // 6. Opt-in (Send to Messenger / Ad Optin)
+      else if (messagingEvent.optin) {
+        const optin = messagingEvent.optin;
+        const fbMessageId = `optin.${Date.now()}`;
+        const userPsid = senderId || optin.user_ref;
+
+        if (userPsid) {
+          parsedEvents.push({
+            type: 'message',
+            pageId,
+            userPsid,
+            senderId: senderId || userPsid,
+            recipientId: recipientId || pageId,
+            timestamp,
+            fbMessageId,
+            text: optin.ref ? `[Opt-in: ${optin.ref}]` : '[Ad Opt-in]',
+            isEcho: false,
+            rawEvent: messagingEvent,
+          });
+        }
+      }
     }
   }
 
