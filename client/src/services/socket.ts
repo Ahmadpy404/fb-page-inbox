@@ -7,7 +7,7 @@ let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
-    const serverUrl = window.location.port === '5173' ? 'http://localhost:3000' : '/';
+    const serverUrl = window.location.port === '5173' ? `http://${window.location.hostname}:3000` : '/';
     socket = io(serverUrl, {
       transports: ['websocket', 'polling'],
       autoConnect: true,
@@ -55,29 +55,53 @@ export function subscribeToRealtimeEvents(handlers: {
 
   if (handlers.onNewMessage) {
     s.on('new_message', handlers.onNewMessage);
+    s.on('message:new', handlers.onNewMessage);
   }
   if (handlers.onNewReply) {
     s.on('new_reply', handlers.onNewReply);
+    s.on('reply:new', handlers.onNewReply);
   }
   if (handlers.onConversationUpdated) {
     s.on('conversation_updated', handlers.onConversationUpdated);
+    s.on('conversation:updated', handlers.onConversationUpdated);
   }
   if (handlers.onSyncStatus) {
     s.on('sync_status', handlers.onSyncStatus);
+    s.on('sync:status', handlers.onSyncStatus);
   }
   if (handlers.onMessageRead) {
     s.on('message_read', handlers.onMessageRead);
+    s.on('message:read', handlers.onMessageRead);
   }
   if (handlers.onTypingStatus) {
     s.on('typing_status', handlers.onTypingStatus);
+    s.on('typing:status', handlers.onTypingStatus);
   }
 
   return () => {
-    if (handlers.onNewMessage) s.off('new_message', handlers.onNewMessage);
-    if (handlers.onNewReply) s.off('new_reply', handlers.onNewReply);
-    if (handlers.onConversationUpdated) s.off('conversation_updated', handlers.onConversationUpdated);
-    if (handlers.onSyncStatus) s.off('sync_status', handlers.onSyncStatus);
-    if (handlers.onMessageRead) s.off('message_read', handlers.onMessageRead);
-    if (handlers.onTypingStatus) s.off('typing_status', handlers.onTypingStatus);
+    if (handlers.onNewMessage) {
+      s.off('new_message', handlers.onNewMessage);
+      s.off('message:new', handlers.onNewMessage);
+    }
+    if (handlers.onNewReply) {
+      s.off('new_reply', handlers.onNewReply);
+      s.off('reply:new', handlers.onNewReply);
+    }
+    if (handlers.onConversationUpdated) {
+      s.off('conversation_updated', handlers.onConversationUpdated);
+      s.off('conversation:updated', handlers.onConversationUpdated);
+    }
+    if (handlers.onSyncStatus) {
+      s.off('sync_status', handlers.onSyncStatus);
+      s.off('sync:status', handlers.onSyncStatus);
+    }
+    if (handlers.onMessageRead) {
+      s.off('message_read', handlers.onMessageRead);
+      s.off('message:read', handlers.onMessageRead);
+    }
+    if (handlers.onTypingStatus) {
+      s.off('typing_status', handlers.onTypingStatus);
+      s.off('typing:status', handlers.onTypingStatus);
+    }
   };
 }

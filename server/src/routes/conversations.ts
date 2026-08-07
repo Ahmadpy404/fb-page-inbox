@@ -191,7 +191,77 @@ router.post('/:id/read', async (req: Request, res: Response) => {
 });
 
 /**
- * POST /api/sync
+ * POST /api/conversations/test-inbound
+ * Ingests a simulated inbound message to test real-time socket events & notifications
+ */
+router.post('/test-inbound', async (req: Request, res: Response) => {
+  try {
+    const activePage = await prisma.page.findFirst({
+      where: { isActive: true },
+    });
+
+    if (!activePage) {
+      return res.status(400).json({ error: 'No active Facebook Page found.' });
+    }
+
+    const testPsid = (req.body?.psid as string) || `test_${Date.now()}`;
+    const testUserName = (req.body?.userName as string) || 'Live Customer Test';
+    const messageText = (req.body?.text as string) || '🔔 Hey there! Testing real-time notifications & instant messaging!';
+
+    const conversation = await prisma.conversation.upsert({
+      where: { psid: testPsid },
+      update: {
+        pageId: activePage.id,
+        userName: testUserName,
+        unread: true,
+        lastMessageAt: new Date(),
+      },
+      create: {
+        pageId: activePage.id,
+        psid: testPsid,
+        userName: testUserName,
+        unread: true,
+        lastMessageAt: new Date(),
+      },
+      include: {
+        page: {
+          select: { id: true, pageId: true, name: true, pictureUrl: true },
+        },
+      },
+    });
+
+    const message = await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        fbMessageId: `m_test_${Date.now()}`,
+        direction: 'inbound',
+        text: messageText,
+        createdAt: new Date(),
+      },
+    });
+
+    const { getIO } = await import('../socket');
+    const io = getIO();
+    if (io) {
+      io.emit('message:new', {
+        message,
+        conversation,
+      });
+      io.emit('conversation:updated', {
+        ...conversation,
+        lastMessage: message,
+      });
+    }
+
+    return res.json({ success: true, message, conversation });
+  } catch (err: any) {
+    console.error('[API] Error creating test inbound message:', err);
+    return res.status(500).json({ error: err.message || 'Failed to simulate test inbound' });
+  }
+});
+
+/**
+ * POST /api/conversations/sync
  * Trigger conversation history backfill (Smart Delta Sync by default, or Force Full Sync).
  */
 router.post('/sync', async (req: Request, res: Response) => {
@@ -207,3 +277,5 @@ router.post('/sync', async (req: Request, res: Response) => {
 });
 
 export default router;
+
+

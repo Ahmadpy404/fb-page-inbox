@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import {
   Send,
   Bot,
@@ -64,13 +64,70 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const [isDragging, setIsDragging] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const prevConvIdRef = useRef<string | null>(null);
 
-  // Auto-scroll to bottom when messages change or typing changes
+  // Reliable instant scroll to bottom function
+  const scrollToBottom = useCallback((instant = true) => {
+    if (!containerRef.current) return;
+    const container = containerRef.current;
+
+    if (instant) {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    }
+
+    // Secondary enforcement
+    requestAnimationFrame(() => {
+      if (containerRef.current) {
+        containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      }
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({ block: 'end', behavior: instant ? 'auto' : 'smooth' });
+      }
+    });
+  }, []);
+
+  // Multi-pass instant scroll to bottom on conversation switch & when messages load
+  useLayoutEffect(() => {
+    if (!conversation) return;
+
+    // 1. Synchronous snap before browser paints
+    if (containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
+
+    // 2. RequestAnimationFrame pass
+    requestAnimationFrame(() => {
+      scrollToBottom(true);
+    });
+
+    // 3. Staggered timers to handle delayed DOM renders & network responses
+    const t1 = setTimeout(() => scrollToBottom(true), 30);
+    const t2 = setTimeout(() => scrollToBottom(true), 100);
+    const t3 = setTimeout(() => scrollToBottom(true), 250);
+
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+    };
+  }, [conversation?.id, messages, loading, scrollToBottom]);
+
+  // Handle typing indicator or new incoming messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, filePreviewUrl, conversation?.isTyping]);
+    if (!containerRef.current) return;
+    const container = containerRef.current;
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 250;
+
+    if (isNearBottom || prevConvIdRef.current !== conversation?.id) {
+      scrollToBottom(true);
+    }
+    prevConvIdRef.current = conversation?.id || null;
+  }, [messages.length, filePreviewUrl, conversation?.isTyping, scrollToBottom, conversation?.id]);
 
   // Mark as read and auto-focus when conversation is opened
   useEffect(() => {
@@ -142,8 +199,30 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   };
 
+  // Auto-resize textarea to fit multiline text smoothly
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      const scrollH = textareaRef.current.scrollHeight;
+      textareaRef.current.style.height = `${Math.min(Math.max(scrollH, 24), 120)}px`;
+    }
+  }, [inputText]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Detect mobile / touch devices (phones, tablets, small screens)
+    const isTouchMobile =
+      typeof window !== 'undefined' &&
+      (window.innerWidth <= 768 ||
+        'ontouchstart' in window ||
+        navigator.maxTouchPoints > 0);
+
+    // On phone / mobile keyboard, Enter key inserts a new line (next line) and never sends
+    if (isTouchMobile) {
+      return;
+    }
+
+    // On desktop physical keyboards: Enter sends, Shift+Enter or Ctrl+Enter inserts newline
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey) {
       e.preventDefault();
       handleSend();
     }
@@ -168,12 +247,70 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   };
 
-  // Parse attachments from message JSON
+  // Bulletproof parser for all Meta / Webhook / DB attachment formats
   const parseAttachments = (attachmentsStr?: string | null): AttachmentItem[] => {
     if (!attachmentsStr) return [];
     try {
-      const parsed = JSON.parse(attachmentsStr);
-      return Array.isArray(parsed) ? parsed : [];
+      let parsed: any = attachmentsStr;
+      if (typeof attachmentsStr === 'string') {
+        try {
+          parsed = JSON.parse(attachmentsStr);
+        } catch {
+          if (
+            attachmentsStr.startsWith('http://') ||
+            attachmentsStr.startsWith('https://') ||
+            attachmentsStr.startsWith('/uploads/')
+          ) {
+            return [{ type: 'image', url: attachmentsStr }];
+          }
+          return [];
+        }
+      }
+
+      if (!parsed) return [];
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      const result: AttachmentItem[] = [];
+      for (const att of list) {
+        if (!att) continue;
+        if (typeof att === 'string') {
+          result.push({ type: 'image', url: att });
+          continue;
+        }
+
+        const rawUrl =
+          att.url ||
+          att.payload?.url ||
+          att.image_data?.url ||
+          att.video_data?.url ||
+          att.file_url ||
+          att.preview_url ||
+          att.payload?.preview_url ||
+          att.image_data?.preview_url ||
+          att.video_data?.preview_url ||
+          '';
+
+        if (!rawUrl) continue;
+
+        const isVid =
+          att.type === 'video' ||
+          Boolean(att.video_data) ||
+          Boolean(rawUrl.match(/\.(mp4|mov|webm|m4v|3gp)(\?.*)?$/i));
+
+        const isImg =
+          att.type === 'image' ||
+          Boolean(att.image_data) ||
+          Boolean(rawUrl.match(/\.(jpg|jpeg|png|gif|webp|svg|bmp)(\?.*)?$/i)) ||
+          !isVid;
+
+        result.push({
+          type: isVid ? 'video' : isImg ? 'image' : 'file',
+          url: rawUrl,
+          preview_url: att.preview_url || att.payload?.preview_url || att.image_data?.preview_url,
+          title: att.title || att.name || att.payload?.title || '',
+        });
+      }
+
+      return result;
     } catch {
       return [];
     }
@@ -321,7 +458,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       </header>
 
       {/* Messages Thread */}
-      <div className="chat-messages-container" id="chat-messages-container">
+      <div ref={containerRef} className="chat-messages-container" id="chat-messages-container">
         {loading && messages.length === 0 ? (
           <div className="skeleton-chat-container">
             <div className="skeleton-bubble-row inbound">
@@ -376,18 +513,25 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
                     {/* Render media attachments if present */}
                     {attachments.map((att, idx) => {
-                      const isVideo = att.type === 'video' || att.url?.match(/\.(mp4|mov|webm)$/i);
-                      const isImage = att.type === 'image' || att.url?.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+                      const isVideo = att.type === 'video' || Boolean(att.url?.match(/\.(mp4|mov|webm|m4v|3gp)(\?.*)?$/i));
+                      const isImage = att.type === 'image' || Boolean(att.url?.match(/\.(jpg|jpeg|png|gif|webp|svg|bmp)(\?.*)?$/i)) || (!isVideo && att.url);
 
                       if (isVideo) {
                         return (
                           <div key={idx} className="media-attachment-container video-box">
-                            <video controls className="chat-media-video" src={att.url} preload="metadata" />
+                            <video
+                              controls
+                              playsInline
+                              className="chat-media-video"
+                              src={att.url}
+                              preload="metadata"
+                              onLoadedData={() => scrollToBottom(true)}
+                            />
                           </div>
                         );
                       }
 
-                      if (isImage || att.url) {
+                      if (isImage && att.url) {
                         return (
                           <div
                             key={idx}
@@ -395,11 +539,46 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                             onClick={() => setLightboxImage(att.url)}
                             title="Click to view full size"
                           >
-                            <img src={att.url} alt={att.title || 'Attachment'} className="chat-media-image" />
+                            <img
+                              src={att.url}
+                              alt={att.title || 'Attachment'}
+                              className="chat-media-image"
+                              loading="lazy"
+                              onLoad={() => scrollToBottom(true)}
+                              onError={(e) => {
+                                const target = e.currentTarget;
+                                if (att.preview_url && target.src !== att.preview_url) {
+                                  target.src = att.preview_url;
+                                } else {
+                                  target.style.display = 'none';
+                                  const fallbackEl = target.parentElement?.querySelector('.image-fallback-badge');
+                                  if (fallbackEl) (fallbackEl as HTMLElement).style.display = 'flex';
+                                }
+                              }}
+                            />
+                            <div className="image-fallback-badge" style={{ display: 'none', padding: '8px 12px', background: 'rgba(0,0,0,0.4)', borderRadius: '8px', color: 'var(--clay-cyan)', fontSize: '12px', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                              <span>📷 View Photo</span>
+                              <Maximize2 size={13} />
+                            </div>
                             <div className="image-zoom-overlay">
                               <Maximize2 size={16} />
                             </div>
                           </div>
+                        );
+                      }
+
+                      if (att.url) {
+                        return (
+                          <a
+                            key={idx}
+                            href={att.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="file-attachment-link"
+                          >
+                            <Paperclip size={14} />
+                            <span>{att.title || 'Download Attached File'}</span>
+                          </a>
                         );
                       }
 

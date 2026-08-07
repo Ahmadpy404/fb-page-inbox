@@ -8,6 +8,7 @@ import { AddPageModal } from './components/Pages/AddPageModal';
 import { BulkBroadcastModal } from './components/Broadcast/BulkBroadcastModal';
 import { LoginModal } from './components/Auth/LoginModal';
 import { ToastAlert } from './components/Notification/ToastAlert';
+import { NotificationBanner } from './components/Notification/NotificationBanner';
 import {
   fetchConversations,
   fetchConversationMessages,
@@ -30,13 +31,12 @@ import {
   verifySession,
   logout,
   syncPagesVault,
+  simulateTestInboundMessage,
 } from './services/api';
 import { getSocket, subscribeToRealtimeEvents, refreshSocketAuth } from './services/socket';
 import { Conversation, Message, Rule, SettingsData, SyncStatus, PageData } from './types';
 
 const VAULT_KEY = 'fb_inbox_pages_vault';
-const EMBEDDED_NOTIFICATION_ICON =
-  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="48" fill="%230084ff"/><path d="M28 50 C28 36 38 26 50 26 C62 26 72 36 72 50 C72 64 62 74 50 74 C45 74 41 73 37 71 L26 75 L30 63 C29 59 28 55 28 50 Z" fill="white"/></svg>';
 
 function deduplicateMessages(list: Message[]): Message[] {
   const seenIds = new Set<string>();
@@ -66,17 +66,49 @@ function deduplicateMessages(list: Message[]): Message[] {
   return result;
 }
 
+let sharedAudioCtx: AudioContext | null = null;
+
+function getOrCreateAudioContext(): AudioContext | null {
+  try {
+    if (typeof window === 'undefined') return null;
+    if (!sharedAudioCtx) {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        sharedAudioCtx = new AudioCtx();
+      }
+    }
+    if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
+      sharedAudioCtx.resume().catch(() => {});
+    }
+    return sharedAudioCtx;
+  } catch {
+    return null;
+  }
+}
+
+// Automatically unlock audio context on first user interaction on window
+if (typeof window !== 'undefined') {
+  const unlockAudio = () => {
+    getOrCreateAudioContext();
+    window.removeEventListener('click', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+    window.removeEventListener('touchstart', unlockAudio);
+  };
+  window.addEventListener('click', unlockAudio, { once: true, passive: true });
+  window.addEventListener('keydown', unlockAudio, { once: true, passive: true });
+  window.addEventListener('touchstart', unlockAudio, { once: true, passive: true });
+}
+
 /**
  * J.A.R.V.I.S. Mark-85 High-Resonance Futuristic Notification Sound FX
  */
 function playLoudNotificationChime() {
   try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
+    const ctx = getOrCreateAudioContext();
+    if (!ctx) return;
 
     if (ctx.state === 'suspended') {
-      ctx.resume();
+      ctx.resume().catch(() => {});
     }
 
     const compressor = ctx.createDynamicsCompressor();
@@ -116,29 +148,103 @@ function playLoudNotificationChime() {
   }
 }
 
+let tabFlashTimer: any = null;
+
 /**
- * Displays OS-native browser notification with fallback
+ * Pulses the browser tab title to alert the user even when working on another window/tab
  */
-function showBrowserNotification(userName: string, text: string, pageName?: string) {
+function flashTabTitle(senderName: string, text: string) {
+  if (typeof document === 'undefined') return;
+  const originalTitle = 'FB Page Unified Inbox';
+  const alertTitle = `💬 (${senderName}): ${text ? text.slice(0, 24) : 'New message'}`;
+
+  if (tabFlashTimer) {
+    clearInterval(tabFlashTimer);
+  }
+
+  let toggled = false;
+  let counter = 0;
+  document.title = alertTitle;
+
+  tabFlashTimer = setInterval(() => {
+    counter++;
+    toggled = !toggled;
+    document.title = toggled ? originalTitle : alertTitle;
+
+    if (counter > 16 || (typeof document !== 'undefined' && document.hasFocus())) {
+      clearInterval(tabFlashTimer);
+      tabFlashTimer = null;
+      document.title = originalTitle;
+    }
+  }, 900);
+}
+
+/**
+ * Displays OS-native browser notification with Service Worker support for guaranteed delivery
+ */
+function showBrowserNotification(
+  userName: string,
+  text: string,
+  pageName?: string,
+  convId?: string,
+  onOpenConversation?: (id: string) => void
+) {
   try {
+    // 1. Tab title flashing for instantaneous visual alert
+    flashTabTitle(userName || 'Customer', text && text.trim() ? text : 'Sent an attachment / media');
+
     if (typeof window === 'undefined' || !('Notification' in window)) return;
 
     if (Notification.permission === 'granted') {
-      const title = `⚡ ${userName || 'Customer'} [${pageName || 'Messenger'}]`;
+      const title = `⚡ ${userName || 'Customer'} [${pageName || 'Facebook'}]`;
       const body = text && text.trim() ? text : 'Sent a photo, video, or attachment.';
-      const notification = new Notification(title, {
-        body,
-        icon: EMBEDDED_NOTIFICATION_ICON,
-        tag: 'fb-chat-alert',
-        silent: false,
-      });
+      const iconUrl = typeof window !== 'undefined' ? `${window.location.origin}/favicon.svg` : undefined;
 
-      notification.onclick = () => {
-        window.focus();
-        notification.close();
+      const triggerNativeNotification = () => {
+        try {
+          const notification = new Notification(title, {
+            body,
+            icon: iconUrl,
+            badge: iconUrl,
+            tag: `fb-msg-${convId || 'chat'}-${Date.now()}`,
+            requireInteraction: false,
+            silent: false,
+          });
+
+          notification.onclick = () => {
+            try {
+              window.focus();
+              if (convId && onOpenConversation) {
+                onOpenConversation(convId);
+              }
+            } catch {}
+            notification.close();
+          };
+        } catch (e) {
+          console.warn('[Notification] Native Notification constructor fallback error:', e);
+        }
       };
+
+      // If ServiceWorker is active, use showNotification for guaranteed background OS delivery
+      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.ready
+          .then((reg) => {
+            return reg.showNotification(title, {
+              body,
+              icon: iconUrl,
+              badge: iconUrl,
+              tag: `fb-msg-${convId || 'chat'}-${Date.now()}`,
+              data: { convId },
+            });
+          })
+          .catch(() => {
+            triggerNativeNotification();
+          });
+      } else {
+        triggerNativeNotification();
+      }
     } else if (Notification.permission === 'default') {
-      Notification.requestPermission();
+      Notification.requestPermission().catch(() => {});
     }
   } catch (err) {
     console.warn('[Notification] Browser notification error:', err);
@@ -172,6 +278,11 @@ export const App: React.FC = () => {
   // Client-side cache for instant switching between chats (0ms delay)
   const messageCacheRef = useRef<Map<string, Message[]>>(new Map());
   const typingTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const selectedConversationIdRef = useRef<string | null>(selectedConversationId);
+
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
 
   const [hudToast, setHudToast] = useState<{
     title: string;
@@ -358,6 +469,20 @@ export const App: React.FC = () => {
           setSelectedConversationId((prev) => prev || convList[0].id);
         }
 
+        // Pre-warm message cache for top conversations for 0ms instant click response
+        convList.slice(0, 8).forEach((c) => {
+          if (c.lastMessage && !messageCacheRef.current.has(c.id)) {
+            messageCacheRef.current.set(c.id, [c.lastMessage]);
+          }
+          fetchConversationMessages(c.id)
+            .then((data) => {
+              if (isMounted && data?.messages) {
+                messageCacheRef.current.set(c.id, deduplicateMessages(data.messages));
+              }
+            })
+            .catch(() => {});
+        });
+
         // Step 3: Trigger background automatic sync if not completed in this session
         if (!hasAutoSynced) {
           setHasAutoSynced(true);
@@ -397,11 +522,13 @@ export const App: React.FC = () => {
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleFocus);
 
-    // Gentle 30s background heartbeat (real-time is powered by Socket.IO)
+    // 10s background sync when active (real-time is powered by Socket.IO)
     const interval = setInterval(() => {
-      loadConversations();
-      loadPages();
-    }, 30000);
+      if (!document.hidden) {
+        loadConversations();
+        loadPages();
+      }
+    }, 10000);
 
     return () => {
       window.removeEventListener('focus', handleFocus);
@@ -424,12 +551,19 @@ export const App: React.FC = () => {
       setMessages(messageCacheRef.current.get(selectedConversationId)!);
       setLoadingMessages(false);
     } else {
+      // Seed with lastMessage from conversation list if available (0ms instant display)
+      const currentConv = conversations.find((c) => c.id === selectedConversationId);
+      if (currentConv?.lastMessage) {
+        setMessages([currentConv.lastMessage]);
+      } else {
+        setMessages([]);
+      }
       setLoadingMessages(true);
     }
 
     fetchConversationMessages(selectedConversationId)
       .then((data) => {
-        if (isCurrent) {
+        if (isCurrent && data?.messages) {
           const deduped = deduplicateMessages(data.messages);
           setMessages(deduped);
           messageCacheRef.current.set(selectedConversationId, deduped);
@@ -444,6 +578,29 @@ export const App: React.FC = () => {
       isCurrent = false;
     };
   }, [isAuthenticated, selectedConversationId]);
+
+  // Register ServiceWorker for background notifications
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch((err) => {
+        console.warn('[SW] ServiceWorker registration notice:', err);
+      });
+
+      const handleSwMessage = (event: MessageEvent) => {
+        if (event.data && event.data.type === 'OPEN_CONVERSATION' && event.data.convId) {
+          setActiveTab('inbox');
+          setSelectedConversationId(event.data.convId);
+          selectedConversationIdRef.current = event.data.convId;
+          setMobileView('chat');
+        }
+      };
+
+      navigator.serviceWorker.addEventListener('message', handleSwMessage);
+      return () => {
+        navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+      };
+    }
+  }, []);
 
   // 3. Setup Socket.IO Realtime Listeners
   useEffect(() => {
@@ -460,28 +617,76 @@ export const App: React.FC = () => {
 
     const unsubscribe = subscribeToRealtimeEvents({
       onNewMessage: ({ message, conversation }) => {
-        // Sound & Browser Notification for inbound messages
+        const activeId = selectedConversationIdRef.current;
+        const convId = conversation.id;
+        const convPsid = conversation.psid;
+        const msgConvId = message.conversationId;
+
+        // 1. Sound, Desktop push & Floating HUD Toast for inbound messages
         if (message.direction === 'inbound') {
           playLoudNotificationChime();
           showBrowserNotification(
             conversation.userName || 'Customer',
             message.text,
-            conversation.page?.name
+            conversation.page?.name,
+            convId,
+            (targetConvId) => {
+              setActiveTab('inbox');
+              setSelectedConversationId(targetConvId);
+              selectedConversationIdRef.current = targetConvId;
+              setMobileView('chat');
+            }
           );
           setHudToast({
             title: conversation.userName || 'Customer',
             body: message.text || 'Sent an attachment / media',
             pageName: conversation.page?.name,
-            convId: conversation.id,
+            convId: convId,
           });
         }
 
-        // Update or insert conversation in list
+        // 2. Update local message cache across all identifiers
+        if (convId) {
+          const cached = messageCacheRef.current.get(convId) || [];
+          const updatedCache = deduplicateMessages([...cached, message]);
+          messageCacheRef.current.set(convId, updatedCache);
+        }
+        if (convPsid) {
+          const cached = messageCacheRef.current.get(convPsid) || [];
+          const updatedCache = deduplicateMessages([...cached, message]);
+          messageCacheRef.current.set(convPsid, updatedCache);
+        }
+        if (msgConvId && msgConvId !== convId) {
+          const cached = messageCacheRef.current.get(msgConvId) || [];
+          const updatedCache = deduplicateMessages([...cached, message]);
+          messageCacheRef.current.set(msgConvId, updatedCache);
+        }
+
+        // 3. Match active chat by id, psid, or message conversationId
+        const isCurrentActive =
+          activeId &&
+          (activeId === convId ||
+            activeId === msgConvId ||
+            activeId === convPsid ||
+            conversations.some((c) => c.id === activeId && (c.psid === convPsid || c.id === convId)));
+
+        if (isCurrentActive) {
+          setMessages((prev) => deduplicateMessages([...prev, message]));
+        }
+
+        // 4. Update or insert conversation in sidebar list & move to top
         setConversations((prev) => {
-          const index = prev.findIndex((c) => c.id === conversation.id);
+          const index = prev.findIndex(
+            (c) => c.id === convId || (convPsid && c.psid === convPsid) || (msgConvId && c.id === msgConvId)
+          );
+          const isCurrentlyOpen = activeId === convId || (activeId && prev[index]?.id === activeId);
+          const existing = index >= 0 ? prev[index] : null;
           const updatedConv = {
+            ...(existing || {}),
             ...conversation,
             lastMessage: message,
+            lastMessageAt: message.createdAt,
+            unread: isCurrentlyOpen ? false : message.direction === 'inbound' ? true : (existing?.unread ?? true),
             isTyping: false,
           };
           if (index >= 0) {
@@ -493,24 +698,29 @@ export const App: React.FC = () => {
           }
         });
 
-        // Update message thread and cache
-        setSelectedConversationId((currentId) => {
-          if (currentId === conversation.id) {
-            setMessages((prev) => {
-              const deduped = deduplicateMessages([...prev, message]);
-              messageCacheRef.current.set(conversation.id, deduped);
-              return deduped;
-            });
-          }
-          return currentId;
-        });
-
         loadPages();
       },
 
       onNewReply: ({ message, conversationId }) => {
+        // 1. Update message cache
+        const cached = messageCacheRef.current.get(conversationId) || [];
+        const updatedCache = deduplicateMessages([...cached, message]);
+        messageCacheRef.current.set(conversationId, updatedCache);
+
+        // 2. Update active chat messages in real time if open
+        const activeId = selectedConversationIdRef.current;
+        const isCurrentActive =
+          activeId &&
+          (activeId === conversationId ||
+            conversations.some((c) => c.id === activeId && (c.id === conversationId || c.psid === conversationId)));
+
+        if (isCurrentActive) {
+          setMessages((prev) => deduplicateMessages([...prev, message]));
+        }
+
+        // 3. Update sidebar conversation lastMessage and timestamp
         setConversations((prev) => {
-          const index = prev.findIndex((c) => c.id === conversationId);
+          const index = prev.findIndex((c) => c.id === conversationId || c.psid === conversationId);
           if (index >= 0) {
             const target = { ...prev[index], lastMessage: message, lastMessageAt: message.createdAt };
             const copy = [...prev];
@@ -519,23 +729,18 @@ export const App: React.FC = () => {
           }
           return prev;
         });
-
-        setSelectedConversationId((currentId) => {
-          if (currentId === conversationId) {
-            setMessages((prev) => {
-              const deduped = deduplicateMessages([...prev, message]);
-              messageCacheRef.current.set(conversationId, deduped);
-              return deduped;
-            });
-          }
-          return currentId;
-        });
       },
 
       onConversationUpdated: (updated) => {
-        setConversations((prev) =>
-          prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c))
-        );
+        setConversations((prev) => {
+          const index = prev.findIndex((c) => c.id === updated.id || (updated.psid && c.psid === updated.psid));
+          if (index >= 0) {
+            const copy = [...prev];
+            copy[index] = { ...copy[index], ...updated };
+            return copy;
+          }
+          return [updated, ...prev];
+        });
       },
 
       onMessageRead: ({ conversationId, watermark }) => {
@@ -592,6 +797,17 @@ export const App: React.FC = () => {
       setAdminUser(null);
     }
   };
+
+  const handleSelectConversation = useCallback((id: string) => {
+    setSelectedConversationId(id);
+    selectedConversationIdRef.current = id;
+    setMobileView('chat');
+
+    // Instant local UI mark-as-read
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, unread: false } : c))
+    );
+  }, []);
 
   // Instant 0ms Optimistic Outbound Messaging
   const handleSendReply = async (text?: string, mediaFile?: File) => {
@@ -756,6 +972,14 @@ export const App: React.FC = () => {
     if (selectedPageId === id) setSelectedPageId('all');
   };
 
+  const handleSimulateTestInbound = async () => {
+    try {
+      await simulateTestInboundMessage('🔔 Test Incoming Message: Real-time notification & chat stream verified!', 'Test Customer (Live Meta)');
+    } catch (err) {
+      console.error('Failed to trigger test inbound message:', err);
+    }
+  };
+
   if (isAuthChecking) {
     return (
       <div className="app-container loading-center">
@@ -794,9 +1018,28 @@ export const App: React.FC = () => {
         onOpenAddModal={() => setIsAddPageModalOpen(true)}
         onTriggerSync={handleTriggerSync}
         onOpenBroadcastModal={() => setIsBroadcastModalOpen(true)}
+        onPlayLoudNotification={playLoudNotificationChime}
+        onSimulateTestInbound={handleSimulateTestInbound}
         adminUser={adminUser}
         onLogout={handleLogout}
       />
+
+      <NotificationBanner onPlayChime={playLoudNotificationChime} />
+
+      {hudToast && (
+        <ToastAlert
+          title={hudToast.title}
+          body={hudToast.body}
+          pageName={hudToast.pageName}
+          convId={hudToast.convId}
+          onOpen={(targetId) => {
+            setActiveTab('inbox');
+            handleSelectConversation(targetId);
+            setHudToast(null);
+          }}
+          onClose={() => setHudToast(null)}
+        />
+      )}
 
       <div className="main-content">
         {activeTab === 'inbox' && (
@@ -805,10 +1048,7 @@ export const App: React.FC = () => {
               <ConversationList
                 conversations={conversations}
                 selectedConversationId={selectedConversationId}
-                onSelectConversation={(id) => {
-                  setSelectedConversationId(id);
-                  setMobileView('chat');
-                }}
+                onSelectConversation={handleSelectConversation}
                 searchQuery={searchQuery}
                 onSearchChange={setSearchQuery}
               />

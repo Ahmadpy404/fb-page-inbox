@@ -35,6 +35,14 @@ async function startServer() {
         startKeepAliveService(port);
       } catch {}
 
+      // Start Autonomous Real-Time Meta Streamer (0-sync real-time message stream)
+      try {
+        const { startRealtimeStreamer } = await import('./services/realtimeStreamer');
+        startRealtimeStreamer(3500); // Polls every 3.5 seconds
+      } catch (err: any) {
+        console.warn('[Startup] Real-time streamer startup error:', err.message || err);
+      }
+
       // Start 23rd-Hour Auto-Followup Re-engagement Worker
       try {
         const { startFollowUpWorker } = await import('./services/followUpEngine');

@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { Search, Bot, BellOff, MessageSquareOff } from 'lucide-react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { Search, Bot, BellOff, MessageSquareOff, ChevronDown } from 'lucide-react';
 import { Conversation } from '../../types';
 
 interface ConversationListProps {
@@ -10,7 +10,10 @@ interface ConversationListProps {
   onSearchChange: (q: string) => void;
 }
 
-function formatRelativeTime(dateString: string): string {
+const INITIAL_PAGE_SIZE = 40;
+const PAGE_INCREMENT = 40;
+
+function formatRelativeTime(dateString?: string): string {
   if (!dateString) return '';
   const date = new Date(dateString);
   const now = new Date();
@@ -39,56 +42,92 @@ interface ConversationItemProps {
   onSelect: (id: string) => void;
 }
 
-const ConversationItem = React.memo<ConversationItemProps>(({ conv, isSelected, onSelect }) => {
-  const snippetPrefix =
-    conv.lastMessage?.direction === 'outbound_manual'
-      ? 'You: '
-      : conv.lastMessage?.direction === 'outbound_auto'
-      ? '🤖: '
-      : '';
+const ConversationItem = React.memo<ConversationItemProps>(
+  ({ conv, isSelected, onSelect }) => {
+    const snippetPrefix =
+      conv.lastMessage?.direction === 'outbound_manual'
+        ? 'You: '
+        : conv.lastMessage?.direction === 'outbound_auto'
+        ? '🤖: '
+        : '';
 
-  return (
-    <div
-      className={`conversation-item ${isSelected ? 'active' : ''} ${conv.unread ? 'unread' : ''}`}
-      onClick={() => onSelect(conv.id)}
-      id={`conv-item-${conv.id}`}
-    >
-      <div className="avatar-wrapper">
-        {conv.userAvatarUrl ? (
-          <img src={conv.userAvatarUrl} alt={conv.userName || 'User'} className="avatar-img" loading="lazy" />
-        ) : (
-          <div className="avatar-placeholder">{getInitials(conv.userName)}</div>
-        )}
-        {conv.unread && <div className="unread-badge-dot" />}
-      </div>
+    const handleClick = useCallback(() => {
+      onSelect(conv.id);
+    }, [conv.id, onSelect]);
 
-      <div className="conversation-info">
-        <div className="conversation-title-row">
-          <span className="conversation-name">{conv.userName || `User ${conv.psid.slice(-6)}`}</span>
-          <span className="conversation-time">{formatRelativeTime(conv.lastMessageAt)}</span>
-        </div>
+    const formattedTime = useMemo(
+      () => formatRelativeTime(conv.lastMessageAt),
+      [conv.lastMessageAt]
+    );
 
-        <div className="conversation-snippet-row">
-          <span className="conversation-snippet">
-            {conv.lastMessage ? `${snippetPrefix}${conv.lastMessage.text}` : 'No messages yet'}
-          </span>
+    const displayName = conv.userName || `User ${conv.psid.slice(-6)}`;
+    const initials = useMemo(() => getInitials(conv.userName), [conv.userName]);
 
-          {conv.autoReplyEnabled ? (
-            <span className="bot-tag active" title="Auto-reply enabled for this conversation">
-              <Bot size={10} />
-              Auto
-            </span>
+    return (
+      <div
+        className={`conversation-item ${isSelected ? 'active' : ''} ${conv.unread ? 'unread' : ''}`}
+        onClick={handleClick}
+        id={`conv-item-${conv.id}`}
+        style={{ contentVisibility: 'auto', containIntrinsicSize: '68px' }}
+      >
+        <div className="avatar-wrapper">
+          {conv.userAvatarUrl ? (
+            <img
+              src={conv.userAvatarUrl}
+              alt={displayName}
+              className="avatar-img"
+              loading="lazy"
+            />
           ) : (
-            <span className="bot-tag muted" title="Auto-reply muted by admin">
-              <BellOff size={10} />
-              Muted
-            </span>
+            <div className="avatar-placeholder">{initials}</div>
           )}
+          {conv.unread && <div className="unread-badge-dot" />}
+        </div>
+
+        <div className="conversation-info">
+          <div className="conversation-title-row">
+            <span className="conversation-name">{displayName}</span>
+            <span className="conversation-time">{formattedTime}</span>
+          </div>
+
+          <div className="conversation-snippet-row">
+            <span className="conversation-snippet">
+              {conv.lastMessage ? `${snippetPrefix}${conv.lastMessage.text}` : 'No messages yet'}
+            </span>
+
+            {conv.autoReplyEnabled ? (
+              <span className="bot-tag active" title="Auto-reply enabled for this conversation">
+                <Bot size={10} />
+                Auto
+              </span>
+            ) : (
+              <span className="bot-tag muted" title="Auto-reply muted by admin">
+                <BellOff size={10} />
+                Muted
+              </span>
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
-});
+    );
+  },
+  (prev, next) => {
+    return (
+      prev.isSelected === next.isSelected &&
+      prev.conv.id === next.conv.id &&
+      prev.conv.unread === next.conv.unread &&
+      prev.conv.lastMessageAt === next.conv.lastMessageAt &&
+      prev.conv.userName === next.conv.userName &&
+      prev.conv.userAvatarUrl === next.conv.userAvatarUrl &&
+      prev.conv.autoReplyEnabled === next.conv.autoReplyEnabled &&
+      prev.conv.lastMessage?.text === next.conv.lastMessage?.text &&
+      prev.conv.lastMessage?.direction === next.conv.lastMessage?.direction &&
+      prev.onSelect === next.onSelect
+    );
+  }
+);
+
+ConversationItem.displayName = 'ConversationItem';
 
 export const ConversationList: React.FC<ConversationListProps> = ({
   conversations,
@@ -98,15 +137,18 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   onSearchChange,
 }) => {
   const [filter, setFilter] = useState<'all' | 'unread' | 'bot_active' | 'bot_muted'>('all');
+  const [visibleCount, setVisibleCount] = useState(INITIAL_PAGE_SIZE);
+  const listContainerRef = useRef<HTMLDivElement>(null);
 
+  // Filter conversations
   const filteredConversations = useMemo(() => {
+    const trimmed = searchQuery.trim().toLowerCase();
     return conversations.filter((c) => {
       // Search query filter
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchesName = (c.userName || '').toLowerCase().includes(q);
-        const matchesPsid = c.psid.toLowerCase().includes(q);
-        const matchesSnippet = (c.lastMessage?.text || '').toLowerCase().includes(q);
+      if (trimmed) {
+        const matchesName = (c.userName || '').toLowerCase().includes(trimmed);
+        const matchesPsid = c.psid.toLowerCase().includes(trimmed);
+        const matchesSnippet = (c.lastMessage?.text || '').toLowerCase().includes(trimmed);
         if (!matchesName && !matchesPsid && !matchesSnippet) {
           return false;
         }
@@ -119,6 +161,32 @@ export const ConversationList: React.FC<ConversationListProps> = ({
       return true;
     });
   }, [conversations, searchQuery, filter]);
+
+  // Reset pagination on filter / search change
+  useEffect(() => {
+    setVisibleCount(INITIAL_PAGE_SIZE);
+    if (listContainerRef.current) {
+      listContainerRef.current.scrollTop = 0;
+    }
+  }, [searchQuery, filter]);
+
+  // Handle progressive scroll to load more
+  const handleScroll = useCallback(() => {
+    if (!listContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = listContainerRef.current;
+    if (scrollTop + clientHeight >= scrollHeight - 150) {
+      setVisibleCount((prev) => Math.min(prev + PAGE_INCREMENT, filteredConversations.length));
+    }
+  }, [filteredConversations.length]);
+
+  const visibleConversations = useMemo(() => {
+    return filteredConversations.slice(0, visibleCount);
+  }, [filteredConversations, visibleCount]);
+
+  const unreadCount = useMemo(
+    () => conversations.filter((c) => c.unread).length,
+    [conversations]
+  );
 
   return (
     <aside className="conversation-sidebar">
@@ -146,7 +214,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             className={`filter-pill ${filter === 'unread' ? 'active' : ''}`}
             onClick={() => setFilter('unread')}
           >
-            Unread ({conversations.filter((c) => c.unread).length})
+            Unread ({unreadCount})
           </button>
           <button
             className={`filter-pill ${filter === 'bot_active' ? 'active' : ''}`}
@@ -163,7 +231,12 @@ export const ConversationList: React.FC<ConversationListProps> = ({
         </div>
       </div>
 
-      <div className="conversation-list">
+      <div
+        className="conversation-list"
+        ref={listContainerRef}
+        onScroll={handleScroll}
+        id="conversation-scroll-container"
+      >
         {filteredConversations.length === 0 ? (
           <div className="empty-state">
             <MessageSquareOff size={32} />
@@ -175,14 +248,37 @@ export const ConversationList: React.FC<ConversationListProps> = ({
             </p>
           </div>
         ) : (
-          filteredConversations.map((conv) => (
-            <ConversationItem
-              key={conv.id}
-              conv={conv}
-              isSelected={conv.id === selectedConversationId}
-              onSelect={onSelectConversation}
-            />
-          ))
+          <>
+            {visibleConversations.map((conv) => (
+              <ConversationItem
+                key={conv.id}
+                conv={conv}
+                isSelected={conv.id === selectedConversationId}
+                onSelect={onSelectConversation}
+              />
+            ))}
+
+            {visibleCount < filteredConversations.length && (
+              <div
+                className="load-more-indicator"
+                onClick={() => setVisibleCount((prev) => prev + PAGE_INCREMENT)}
+                style={{
+                  padding: '12px',
+                  textAlign: 'center',
+                  color: 'var(--accent-primary)',
+                  fontSize: '0.8rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px',
+                }}
+              >
+                <span>Showing {visibleCount} of {filteredConversations.length} leads</span>
+                <ChevronDown size={14} />
+              </div>
+            )}
+          </>
         )}
       </div>
     </aside>

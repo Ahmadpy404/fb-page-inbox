@@ -197,6 +197,24 @@ export async function triggerSync(
   return res.json();
 }
 
+export async function simulateTestInboundMessage(
+  text?: string,
+  userName?: string
+): Promise<{ success: boolean; message: Message; conversation: Conversation }> {
+  const res = await authFetch(`${API_BASE}/conversations/test-inbound`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, userName }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Failed to simulate test inbound' }));
+    throw new Error(err.error || 'Failed to simulate test inbound');
+  }
+  return res.json();
+}
+
+
+
 // -------------------------------------------------------------
 // Pages APIs & Persistent Vault Sync
 // -------------------------------------------------------------

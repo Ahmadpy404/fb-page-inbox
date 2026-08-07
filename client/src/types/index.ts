@@ -4,6 +4,7 @@ export type MatchType = 'exact' | 'contains' | 'regex';
 export interface AttachmentItem {
   type: 'image' | 'video' | 'audio' | 'file' | string;
   url: string;
+  preview_url?: string;
   title?: string;
   name?: string;
 }

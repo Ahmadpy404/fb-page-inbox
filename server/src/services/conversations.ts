@@ -43,29 +43,41 @@ export async function getOrCreateConversation(
   }
 
   if (!conversation) {
-    let finalName = initialName || `User ${psid.length > 4 ? psid.slice(-4) : psid}`;
-    let avatarUrl: string | undefined;
-
-    try {
-      const profile = await graphApiClient.getUserProfile(psid, pageAccessToken);
-      if (profile && (profile.name || profile.first_name)) {
-        finalName = profile.name || `${profile.first_name || ''} ${profile.last_name || ''}`.trim();
-        avatarUrl = profile.profile_pic || undefined;
-      }
-    } catch {
-      // ignore if profile not available
-    }
+    const finalName = initialName || `User ${psid.length > 4 ? psid.slice(-4) : psid}`;
 
     conversation = await prisma.conversation.create({
       data: {
         psid,
         userName: finalName,
-        userAvatarUrl: avatarUrl,
+        userAvatarUrl: undefined,
         lastMessageAt: new Date(),
         unread: true,
         autoReplyEnabled: true,
         pageId: internalPageId,
       },
+    });
+
+    // Asynchronously fetch profile in background without blocking message delivery
+    const convId = conversation.id;
+    setImmediate(async () => {
+      try {
+        const profile = await graphApiClient.getUserProfile(psid, pageAccessToken);
+        if (profile && (profile.name || profile.first_name)) {
+          const resolvedName = profile.name || `${profile.first_name || ''} ${profile.last_name || ''}`.trim();
+          const avatarUrl = profile.profile_pic || undefined;
+          const updated = await prisma.conversation.update({
+            where: { id: convId },
+            data: {
+              userName: resolvedName,
+              userAvatarUrl: avatarUrl,
+            },
+            include: { page: true },
+          });
+          emitConversationUpdated(updated);
+        }
+      } catch {
+        // Silently ignore if profile is not accessible
+      }
     });
   } else {
     // If existing conversation needs page association or name upgrade

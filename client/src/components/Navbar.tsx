@@ -1,5 +1,5 @@
-import React from 'react';
-import { MessageSquare, Bot, Settings as SettingsIcon, RefreshCw, LogOut, ShieldCheck } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { MessageSquare, Bot, Settings as SettingsIcon, RefreshCw, LogOut, ShieldCheck, Bell } from 'lucide-react';
 import { FacebookStatus, SyncStatus, PageData } from '../types';
 import { PageSelector } from './Pages/PageSelector';
 
@@ -15,6 +15,8 @@ interface NavbarProps {
   onOpenAddModal: () => void;
   onTriggerSync: () => void;
   onOpenBroadcastModal: () => void;
+  onPlayLoudNotification?: () => void;
+  onSimulateTestInbound?: () => void;
   adminUser?: { username: string; role?: string } | null;
   onLogout: () => void;
 }
@@ -30,10 +32,47 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAddModal,
   onTriggerSync,
   onOpenBroadcastModal,
+  onPlayLoudNotification,
+  onSimulateTestInbound,
   adminUser,
   onLogout,
 }) => {
   const totalUnread = pages.reduce((acc, p) => acc + (p.unreadConversations || 0), 0);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission>(
+    typeof Notification !== 'undefined' ? Notification.permission : 'default'
+  );
+
+  useEffect(() => {
+    if (typeof Notification !== 'undefined') {
+      setNotifPermission(Notification.permission);
+    }
+  }, []);
+
+  const handleTestAlerts = async () => {
+    if (onPlayLoudNotification) {
+      onPlayLoudNotification();
+    }
+    if (typeof Notification !== 'undefined') {
+      if (Notification.permission === 'default') {
+        const res = await Notification.requestPermission();
+        setNotifPermission(res);
+      }
+      if (Notification.permission === 'granted') {
+        try {
+          new Notification('⚡ FB Unified Inbox Alerts Active', {
+            body: '🔔 Sound and real-time desktop notifications are verified and working perfectly!',
+            icon: typeof window !== 'undefined' ? `${window.location.origin}/vite.svg` : undefined,
+            silent: false,
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+    if (onSimulateTestInbound) {
+      onSimulateTestInbound();
+    }
+  };
 
   return (
     <>
@@ -100,6 +139,23 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className={`status-dot ${socketConnected ? 'online' : 'offline'}`} />
             <span className="status-label">{socketConnected ? 'Live' : 'Connecting'}</span>
           </div>
+
+          {/* Sound & Notification Test Button */}
+          <button
+            className={`sound-test-btn ${notifPermission === 'default' ? 'needs-permission' : ''}`}
+            onClick={handleTestAlerts}
+            title={
+              notifPermission === 'granted'
+                ? 'Audio & Desktop Notifications Active (Click to test sound)'
+                : 'Click to enable browser notifications & test audio alert'
+            }
+            id="btn-test-notification-sound"
+          >
+            <Bell size={14} className={notifPermission === 'default' ? 'bell-bounce' : ''} />
+            <span className="sound-btn-text">
+              {notifPermission === 'granted' ? 'Alerts ON' : 'Enable Alerts'}
+            </span>
+          </button>
 
           {/* Bulk Broadcast Action Button */}
           <button
